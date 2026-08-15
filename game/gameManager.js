@@ -24,6 +24,7 @@ function createGameState(roomCode, hostSocketId, hostName) {
     board: rules.createEmptyBoard(),
     currentTurn: "player1",
     moveCount: 0,
+    usedNumbers: new Set(), // digits 1-10 already claimed by either player
     blackHolePosition: null,
     blackHoleResult: null, // filled once computed
     scores: { player1: 0, player2: 0 },
@@ -58,16 +59,25 @@ function otherKey(playerKey) {
 /**
  * Applies a validated move to the game. Assumes isValidMove() already
  * passed - callers (socket handlers) are responsible for validating first.
+ *
+ * Each digit 1-10 may only ever be placed once across the whole match,
+ * so `game.usedNumbers` fills up long before the 21-circle board does.
+ * The Black Hole finale triggers as soon as either the board is down to
+ * its last empty circle (the original rule) OR every digit has been
+ * claimed and no further move is possible - whichever happens first.
  */
 function applyMove(game, playerKey, position, number) {
   game.board[position] = { number, player: playerKey };
+  game.usedNumbers.add(number);
   game.moveCount += 1;
   game.lastActivity = Date.now();
 
-  const blackHolePosition = rules.getBlackHolePosition(game.board);
+  const emptyCount = game.board.reduce((n, cell) => n + (cell === null ? 1 : 0), 0);
+  const allDigitsUsed = game.usedNumbers.size >= rules.TOTAL_DIGITS;
+  const shouldTrigger = emptyCount === 1 || (allDigitsUsed && emptyCount > 0);
 
-  if (blackHolePosition !== null) {
-    // 20 moves made; the last empty circle is now the Black Hole.
+  if (shouldTrigger) {
+    const blackHolePosition = rules.getBlackHolePosition(game.board);
     game.status = "blackhole";
     game.blackHolePosition = blackHolePosition;
     game.blackHoleResult = rules.calculateBlackHoleResult(game.board, blackHolePosition);
@@ -98,6 +108,7 @@ function resetForRematch(game) {
   game.board = rules.createEmptyBoard();
   game.currentTurn = nextStarter;
   game.moveCount = 0;
+  game.usedNumbers = new Set();
   game.blackHolePosition = null;
   game.blackHoleResult = null;
   game.scores = { player1: 0, player2: 0 };
@@ -128,6 +139,8 @@ function serializeGame(game) {
     board: game.board,
     currentTurn: game.currentTurn,
     moveCount: game.moveCount,
+    usedNumbers: Array.from(game.usedNumbers),
+    availableNumbers: rules.getAvailableNumbers(game.usedNumbers),
     blackHolePosition: game.blackHolePosition,
     blackHoleResult: game.blackHoleResult,
     scores: game.scores,

@@ -17,6 +17,7 @@
 
 const TOTAL_CIRCLES = 21;
 const TOTAL_ROWS = 6;
+const TOTAL_DIGITS = 10; // digits 1–10, each usable exactly once per match
 
 // rows[r] (r = 1..6) => array of position IDs in that row, left to right.
 const ROWS = (() => {
@@ -92,6 +93,8 @@ function isValidNumber(num) {
 
 /**
  * Validates a move against full server-authoritative game state.
+ * `game.usedNumbers` is expected to be a Set of digits already claimed
+ * by either player this match — each digit 1–10 may only be placed once.
  * Returns { valid: true } or { valid: false, reason: "..." }
  */
 function isValidMove(game, playerKey, position, number) {
@@ -101,24 +104,54 @@ function isValidMove(game, playerKey, position, number) {
   if (!isValidPosition(position)) return { valid: false, reason: "Invalid circle." };
   if (game.board[position] !== null) return { valid: false, reason: "Circle already occupied." };
   if (!isValidNumber(number)) return { valid: false, reason: "Number must be between 1 and 10." };
+  if (game.usedNumbers && game.usedNumbers.has(number)) {
+    return { valid: false, reason: "That number has already been used." };
+  }
   return { valid: true };
 }
 
 /**
- * Finds the single remaining empty circle. Returns null if the board
- * isn't in a state where exactly one circle is empty.
+ * Finds where the Black Hole singularity should anchor.
+ *
+ * Classic case: exactly one circle is empty (the board filled up) — that
+ * circle IS the Black Hole, same as the original rule.
+ *
+ * With the "each digit used once" rule, the 10 available digits usually
+ * run out long before all 21 circles fill. In that case there's no
+ * single natural empty circle, so the singularity anchors at the empty
+ * circle most surrounded by filled ones (flagged via ties broken by the
+ * lowest position id, so the result is deterministic on both clients).
  */
 function getBlackHolePosition(board) {
   const empty = board.reduce((acc, cell, idx) => {
     if (cell === null) acc.push(idx);
     return acc;
   }, []);
-  return empty.length === 1 ? empty[0] : null;
+  if (empty.length === 0) return null;
+  if (empty.length === 1) return empty[0];
+
+  let best = empty[0];
+  let bestCount = -1;
+  for (const pos of empty) {
+    const filledNeighbors = getBlackHoleNeighbors(pos).filter((n) => board[n] !== null).length;
+    if (filledNeighbors > bestCount) {
+      best = pos;
+      bestCount = filledNeighbors;
+    }
+  }
+  return best;
 }
 
 /**
  * Given the board and the black hole position, computes the ordered
  * absorption sequence and running/final scores per player.
+ *
+ * Classic case (exactly one empty circle): only the circles directly
+ * adjacent to the Black Hole are pulled in — unchanged from the original
+ * rule. If more than one circle is empty (the 10-digit pool ran out
+ * first), every placed number is already "in range" of a 21-circle board
+ * with only 10 possible entries, so the singularity pulls in everything
+ * that was ever placed.
  *
  * Returns:
  * {
@@ -128,14 +161,23 @@ function getBlackHolePosition(board) {
  * }
  */
 function calculateBlackHoleResult(board, blackHolePosition) {
-  const neighborPositions = getBlackHoleNeighbors(blackHolePosition);
-  const neighbors = neighborPositions
-    .filter((pos) => board[pos] !== null)
-    .map((pos) => ({
-      position: pos,
-      number: board[pos].number,
-      player: board[pos].player,
-    }));
+  const emptyCount = board.reduce((n, cell) => n + (cell === null ? 1 : 0), 0);
+
+  let neighbors;
+  if (emptyCount <= 1) {
+    const neighborPositions = getBlackHoleNeighbors(blackHolePosition);
+    neighbors = neighborPositions
+      .filter((pos) => board[pos] !== null)
+      .map((pos) => ({
+        position: pos,
+        number: board[pos].number,
+        player: board[pos].player,
+      }));
+  } else {
+    neighbors = board
+      .map((cell, pos) => (cell ? { position: pos, number: cell.number, player: cell.player } : null))
+      .filter(Boolean);
+  }
 
   const scores = calculateScores(neighbors);
 
@@ -168,9 +210,20 @@ function sanitizeName(rawName) {
   return cleaned.length > 0 ? cleaned : "Player";
 }
 
+/** All digits 1..10 that are not yet in the used set. */
+function getAvailableNumbers(usedNumbers) {
+  const used = usedNumbers instanceof Set ? usedNumbers : new Set(usedNumbers || []);
+  const available = [];
+  for (let n = 1; n <= TOTAL_DIGITS; n++) {
+    if (!used.has(n)) available.push(n);
+  }
+  return available;
+}
+
 module.exports = {
   TOTAL_CIRCLES,
   TOTAL_ROWS,
+  TOTAL_DIGITS,
   ROWS,
   getBlackHoleNeighbors,
   createEmptyBoard,
@@ -182,4 +235,5 @@ module.exports = {
   calculateScores,
   determineWinner,
   sanitizeName,
+  getAvailableNumbers,
 };
