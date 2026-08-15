@@ -220,7 +220,7 @@ class Starfield {
     this.canvas.height = this.h * this.dpr;
     this.canvas.style.width = this.w + "px";
     this.canvas.style.height = this.h + "px";
-    const count = Math.floor((this.w * this.h) / 9000);
+    const count = Math.floor((this.w * this.h) / 14000);
     this.stars = new Array(count).fill(0).map(() => ({
       x: Math.random() * this.w,
       y: Math.random() * this.h,
@@ -232,6 +232,8 @@ class Starfield {
   }
 
   loop(t) {
+    requestAnimationFrame(this.loop);
+    if (document.hidden) return; // skip all work while the tab is backgrounded
     const ctx = this.ctx;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.w, this.h);
@@ -247,7 +249,6 @@ class Starfield {
       ctx.fill();
     }
     ctx.globalAlpha = 1;
-    requestAnimationFrame(this.loop);
   }
 }
 
@@ -954,6 +955,38 @@ class WinnerParticles {
 const winnerParticles = new WinnerParticles($("#winner-canvas"));
 
 // ============================================================
+// Post-game flavor text. Loser gets roasted, winner gets a dry flex.
+// Picked client-side per player — purely cosmetic, doesn't touch the
+// server-authoritative result.
+// ============================================================
+
+const ROAST_LINES = [
+  "the black hole had standards. you didn't meet them.",
+  "gravity picked a side. it wasn't yours.",
+  "even the void looked away.",
+  "some people learn from their mistakes. anyway.",
+  "the math wasn't on your side. nothing was.",
+  "singularity: 1. you: catastrophically less.",
+  "that's not a loss, that's a warning sign.",
+  "the numbers added up. you didn't.",
+  "well. that happened.",
+  "you brought strategy. it stayed home.",
+];
+
+const FLEX_LINES = [
+  "the black hole answers to you now.",
+  "cold math, colder win.",
+  "gravity had no choice.",
+  "some are born lucky. you did the math.",
+  "the void respects efficiency.",
+  "not luck. arithmetic.",
+];
+
+function pickLine(lines) {
+  return lines[Math.floor(Math.random() * lines.length)];
+}
+
+// ============================================================
 // Main application state + socket wiring
 // ============================================================
 
@@ -1085,25 +1118,38 @@ function updateGameState(game, opts = {}) {
   $("#chip-player1").classList.toggle("active-turn", game.currentTurn === "player1");
   $("#chip-player2").classList.toggle("active-turn", game.currentTurn === "player2");
 
-  if (game.players.player1?.connected === false) {
-    /* left to opponent-status banner */
-  }
   if (game.players.player2 && game.players.player2.connected !== false) {
     $("#opponent-status").classList.add("hidden");
   }
 
-  $("#move-counter").textContent = `Move ${game.moveCount} / 20`;
+  // Digits used out of 10 is the real progress metric now that each
+  // number is single-use — moveCount already equals it 1:1.
+  $("#move-counter").textContent = `${game.moveCount}/10 digits used`;
 
+  const turnEl = $("#turn-text");
   if (game.status === "playing") {
     const myTurn = game.currentTurn === appState.you;
-    $("#turn-text").textContent = myTurn ? "Your turn" : `${appState.names[game.currentTurn]}'s turn`;
+    const newText = myTurn ? "YOUR TURN" : "OPPONENT'S TURN";
+    if (appState.lastTurnText !== newText) {
+      // One-shot flash on change only — never a looping animation, so
+      // there's no continuous repaint cost while a turn just sits idle.
+      turnEl.classList.remove("turn-flash");
+      void turnEl.offsetWidth; // restart the animation
+      turnEl.classList.add("turn-flash");
+      appState.lastTurnText = newText;
+    }
+    turnEl.textContent = newText;
+    turnEl.classList.toggle("your-turn", myTurn);
+    turnEl.classList.toggle("opponent-turn", !myTurn);
     $("#selector-hint").textContent = myTurn
       ? appState.selectedPosition !== null
         ? "Pick a number 1–10"
         : "Choose a circle, then a number"
       : "Waiting for opponent…";
   } else if (game.status === "waiting") {
-    $("#turn-text").textContent = "Waiting for opponent…";
+    turnEl.textContent = "WAITING FOR OPPONENT…";
+    turnEl.classList.remove("your-turn", "opponent-turn", "turn-flash");
+    appState.lastTurnText = null;
   }
 
   boardView.render(game.board, { currentTurn: game.currentTurn, you: appState.you, status: game.status });
@@ -1111,9 +1157,16 @@ function updateGameState(game, opts = {}) {
   renderNumberSelector();
 }
 
+// Persistent number-button references so a state update only ever
+// touches the specific buttons that changed, instead of tearing down
+// and rebuilding all 10 every time a move comes in.
+const numberButtons = new Map();
+
 function renderNumberSelector() {
   const wrap = $("#number-selector");
-  if (wrap.childElementCount === 0) {
+  const game = appState.game;
+
+  if (numberButtons.size === 0) {
     for (let n = 1; n <= 10; n++) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1122,12 +1175,27 @@ function renderNumberSelector() {
       btn.dataset.number = String(n);
       btn.addEventListener("click", () => onNumberChosen(n));
       wrap.appendChild(btn);
+      numberButtons.set(n, btn);
     }
   }
-  const game = appState.game;
+
+  const usedSet = new Set(game ? game.usedNumbers : []);
   const canPlay =
     game && game.status === "playing" && game.currentTurn === appState.you && appState.selectedPosition !== null;
-  $$(".num-btn", wrap).forEach((btn) => (btn.disabled = !canPlay));
+
+  numberButtons.forEach((btn, n) => {
+    if (usedSet.has(n)) {
+      // Used digits disappear for good — a short scale/opacity animation,
+      // then removed from the DOM so the grid reflows the rest cleanly.
+      if (btn.isConnected && !btn.classList.contains("leaving")) {
+        btn.classList.add("leaving");
+        btn.disabled = true;
+        setTimeout(() => btn.remove(), 230);
+      }
+    } else {
+      btn.disabled = !canPlay;
+    }
+  });
 }
 
 function onCircleChosen(position) {
@@ -1165,6 +1233,7 @@ function resetBoardVisuals() {
   boardView.build();
   boardView.onCircleClick = onCircleChosen;
   appState.selectedPosition = null;
+  appState.lastTurnText = null;
   $("#formation-caption").classList.add("hidden");
   $("#score-readout").classList.add("hidden");
   $("#score-sum-player1").textContent = "";
@@ -1176,6 +1245,13 @@ function resetBoardVisuals() {
   );
   $("#board-distortion").style.filter = "";
   $("#board-distortion").style.transform = "";
+
+  // A fresh match means every digit 1–10 is available again — rebuild
+  // the selector from scratch rather than trying to resurrect buttons
+  // that already animated out.
+  $("#number-selector").innerHTML = "";
+  numberButtons.clear();
+
   if (appState.game) {
     boardView.render(appState.game.board, {
       currentTurn: appState.game.currentTurn,
@@ -1226,25 +1302,49 @@ function revealWinner(game) {
   const subtitle = $("#winner-subtitle");
   const title = $("#winner-title");
   const trophy = $("#winner-trophy");
+  const resultLine = $("#result-line");
 
-  if (winner === "draw") {
+  title.classList.remove("you-win", "you-lose", "you-draw");
+  trophy.classList.remove("you-lose");
+  resultLine.classList.remove("roast", "flex");
+  resultLine.classList.add("hidden");
+  resultLine.textContent = "";
+
+  const isDraw = winner === "draw";
+  const iWon = !isDraw && winner === appState.you;
+
+  if (isDraw) {
     title.textContent = "DRAW";
+    title.classList.add("you-draw");
     subtitle.textContent = "THE BLACK HOLE COULDN'T DECIDE.";
     subtitle.classList.remove("hidden");
     trophy.textContent = "🌌";
-  } else {
-    const winnerName = appState.names[winner];
-    title.textContent = `${winnerName.toUpperCase()} WINS`;
+  } else if (iWon) {
+    title.textContent = "YOU WIN";
+    title.classList.add("you-win");
     subtitle.classList.add("hidden");
     trophy.textContent = "🏆";
+    resultLine.textContent = pickLine(FLEX_LINES);
+    resultLine.classList.add("flex");
+    resultLine.classList.remove("hidden");
+    (winner === "player1" ? p1Block : p2Block).classList.add("is-winner");
+  } else {
+    title.textContent = "YOU LOSE";
+    title.classList.add("you-lose");
+    subtitle.classList.add("hidden");
+    trophy.textContent = "💀";
+    trophy.classList.add("you-lose");
+    resultLine.textContent = pickLine(ROAST_LINES);
+    resultLine.classList.add("roast");
+    resultLine.classList.remove("hidden");
     (winner === "player1" ? p1Block : p2Block).classList.add("is-winner");
   }
 
   showScreen("screen-winner");
   animateCountUp($("#wscore-player1"), 0, scores.player1, "");
   animateCountUp($("#wscore-player2"), 0, scores.player2, "");
-  sound.chime(winner !== "draw");
-  winnerParticles.burst();
+  sound.chime(iWon);
+  if (iWon) winnerParticles.burst();
 }
 
 // ============================================================

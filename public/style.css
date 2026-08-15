@@ -358,7 +358,23 @@ html, body {
 .player-chip.active-turn { border-color: rgba(255,255,255,0.4); box-shadow: 0 0 0 2px rgba(255,255,255,0.06); }
 
 .turn-indicator { text-align: center; flex-shrink: 0; }
-#turn-text { display: block; font-family: var(--font-display); font-weight: 600; font-size: 0.95rem; }
+#turn-text {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+#turn-text.your-turn { color: var(--ok); text-shadow: 0 0 14px rgba(85, 224, 168, 0.4); }
+#turn-text.opponent-turn { color: var(--text-faint); }
+#turn-text.turn-flash { animation: turn-flash 0.35s ease; }
+@keyframes turn-flash {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
 .move-counter { display: block; font-size: 0.7rem; color: var(--text-faint); margin-top: 2px; }
 
 .opponent-status {
@@ -374,7 +390,7 @@ html, body {
 .board-stage {
   position: relative;
   width: 100%;
-  max-width: 460px;
+  max-width: 620px;
   aspect-ratio: 6 / 5.4;
   display: flex;
   align-items: center;
@@ -394,18 +410,18 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: clamp(4px, 1.6vw, 10px);
+  gap: clamp(6px, 2.1vw, 14px);
   width: 100%;
 }
 
 .board-row {
   display: flex;
-  gap: clamp(4px, 1.6vw, 10px);
+  gap: clamp(6px, 2.1vw, 14px);
   justify-content: center;
 }
 
 .circle {
-  --size: clamp(38px, 9.5vw, 56px);
+  --size: clamp(46px, 13vw, 78px);
   width: var(--size);
   height: var(--size);
   border-radius: 50%;
@@ -416,40 +432,52 @@ html, body {
   justify-content: center;
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: clamp(0.85rem, 3.4vw, 1.15rem);
+  font-size: clamp(1.05rem, 4.4vw, 1.55rem);
   color: var(--text);
   cursor: pointer;
   position: relative;
   transition: transform 0.12s ease, box-shadow 0.2s ease, border-color 0.2s ease, opacity 0.4s ease, filter 0.4s ease;
   touch-action: manipulation;
+  box-shadow: inset 0 0 8px rgba(111,92,255,0.15);
 }
 
-.circle.empty {
-  box-shadow: inset 0 0 10px rgba(111,92,255,0.25), 0 0 10px rgba(111,92,255,0.08);
+/* Idle glow uses a pseudo-element animating opacity+transform only
+   (GPU-composited) instead of animating box-shadow on the circle
+   itself, which forces a repaint on every element every frame. */
+.circle.empty::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(111,92,255,0.35), transparent 70%);
+  opacity: 0.4;
+  transform: scale(0.9);
   animation: circle-idle 3.2s ease-in-out infinite;
+  pointer-events: none;
+  will-change: opacity, transform;
 }
 @keyframes circle-idle {
-  0%, 100% { box-shadow: inset 0 0 10px rgba(111,92,255,0.2), 0 0 8px rgba(111,92,255,0.05); }
-  50% { box-shadow: inset 0 0 16px rgba(111,92,255,0.4), 0 0 16px rgba(111,92,255,0.18); }
+  0%, 100% { opacity: 0.3; transform: scale(0.88); }
+  50% { opacity: 0.75; transform: scale(1.05); }
 }
 
 .circle.empty:hover, .circle.empty:focus-visible { border-color: var(--purple); transform: translateY(-2px); }
 .circle.selectable { cursor: pointer; }
 .circle.disabled-hole { cursor: default; }
 
-.circle.selected {
-  border-color: var(--hot);
-  box-shadow: 0 0 0 4px rgba(255, 226, 138, 0.18), 0 0 22px rgba(255, 226, 138, 0.35);
+.circle.selected { border-color: var(--hot); }
+.circle.selected::before {
+  background: radial-gradient(circle, rgba(255,226,138,0.55), transparent 70%);
   animation: ripple 0.9s ease-out infinite;
 }
 @keyframes ripple {
-  0% { box-shadow: 0 0 0 0 rgba(255,226,138,0.4), 0 0 22px rgba(255,226,138,0.35); }
-  100% { box-shadow: 0 0 0 10px rgba(255,226,138,0), 0 0 22px rgba(255,226,138,0.35); }
+  0% { opacity: 0.7; transform: scale(0.9); }
+  100% { opacity: 0; transform: scale(1.6); }
 }
 
 .circle.filled { cursor: default; }
-.circle.filled.p1 { border-color: rgba(90, 209, 255, 0.55); box-shadow: 0 0 12px rgba(90,209,255,0.15); }
-.circle.filled.p2 { border-color: rgba(255, 138, 92, 0.55); box-shadow: 0 0 12px rgba(255,138,92,0.15); }
+.circle.filled.p1 { border-color: rgba(90, 209, 255, 0.55); box-shadow: 0 0 10px rgba(90,209,255,0.18); }
+.circle.filled.p2 { border-color: rgba(255, 138, 92, 0.55); box-shadow: 0 0 10px rgba(255,138,92,0.18); }
 .circle .owner-dot {
   position: absolute;
   bottom: -3px;
@@ -527,11 +555,29 @@ html, body {
   cursor: pointer;
   min-height: 46px;
   transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(6px);
+  will-change: auto;
 }
 .num-btn:active { transform: scale(0.94); }
 .num-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .num-btn.armed { border-color: var(--blue); background: rgba(62,168,255,0.15); }
+
+/* Used-digit disappearance: opacity + transform only, GPU-friendly.
+   The element is removed from the DOM once this finishes, letting the
+   grid reflow the remaining buttons into place automatically. */
+.num-btn.leaving {
+  animation: num-leave 0.22s ease forwards;
+  pointer-events: none;
+}
+@keyframes num-leave {
+  0% { opacity: 1; transform: scale(1) rotate(0deg); }
+  100% { opacity: 0; transform: scale(0.35) rotate(14deg); }
+}
+.num-btn.entering { animation: num-enter 0.22s ease; }
+@keyframes num-enter {
+  0% { opacity: 0; transform: scale(0.6); }
+  100% { opacity: 1; transform: scale(1); }
+}
 
 /* ---------- score readout ---------- */
 
@@ -541,11 +587,11 @@ html, body {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  background: var(--glass);
+  background: rgba(18, 20, 44, 0.8);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
   padding: 14px 18px;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
 }
 .score-col { display: flex; flex-direction: column; align-items: center; flex: 1; gap: 2px; }
 .score-col-name { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -572,11 +618,47 @@ html, body {
 .trophy { font-size: 3rem; margin-bottom: 4px; filter: drop-shadow(0 0 20px rgba(255,226,138,0.6)); }
 #winner-title {
   font-family: var(--font-display);
-  font-size: clamp(1.6rem, 6vw, 2.2rem);
+  font-weight: 700;
+  font-size: clamp(2.2rem, 9vw, 3.4rem);
   margin: 0 0 4px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
+  opacity: 0;
+  transform: translateY(10px) scale(0.94);
+  animation: title-in 0.5s cubic-bezier(.2,.8,.3,1.2) forwards;
 }
+@keyframes title-in { to { opacity: 1; transform: translateY(0) scale(1); } }
+
+#winner-title.you-win {
+  color: var(--hot);
+  text-shadow: 0 0 30px rgba(255, 226, 138, 0.75), 0 0 70px rgba(255, 157, 61, 0.35);
+}
+#winner-title.you-lose {
+  color: #c9cfef;
+  animation: title-in 0.5s cubic-bezier(.2,.8,.3,1.2) forwards, title-shake 0.4s ease 0.5s;
+}
+@keyframes title-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  75% { transform: translateX(6px); }
+}
+#winner-title.you-draw { color: var(--text-dim); }
+
 #winner-subtitle { color: var(--text-dim); margin: 0 0 10px; font-size: 0.9rem; letter-spacing: 0.04em; }
+
+.result-line {
+  font-size: 0.92rem;
+  color: var(--text-dim);
+  margin: 2px 0 14px;
+  min-height: 1.4em;
+  max-width: 320px;
+  opacity: 0;
+  animation: result-line-in 0.5s ease 0.35s forwards;
+}
+@keyframes result-line-in { to { opacity: 1; } }
+.result-line.roast { color: var(--p2); font-style: italic; }
+.result-line.flex { color: var(--hot); }
+
+.trophy.you-lose { filter: grayscale(0.6) opacity(0.7); }
 
 .winner-scores {
   display: flex;
@@ -601,4 +683,23 @@ html, body {
 @media (max-width: 380px) {
   .panel { padding: 22px 16px; }
   .game-header { font-size: 0.9rem; }
+}
+
+/* ---------- mobile performance hardening ----------
+   backdrop-filter is one of the more expensive paints on mid/low-end
+   Android GPUs, especially layered behind an animating canvas. Drop it
+   on narrow viewports and fall back to a plain translucent background. */
+@media (max-width: 600px) {
+  .panel,
+  .btn-secondary,
+  .icon-btn,
+  .num-btn,
+  .score-readout {
+    backdrop-filter: none;
+  }
+  .panel { background: rgba(14, 16, 36, 0.92); }
+  .btn-secondary { background: rgba(14, 16, 36, 0.85); }
+  .icon-btn { background: rgba(14, 16, 36, 0.85); }
+  .num-btn { background: rgba(18, 20, 44, 0.92); }
+  .score-readout { background: rgba(14, 16, 36, 0.9); }
 }
