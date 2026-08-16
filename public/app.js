@@ -1019,7 +1019,19 @@ function connectSocket() {
         { roomCode: saved.roomCode, playerKey: saved.playerKey },
         (res) => {
           if (res && res.ok) {
-            enterGame(res.game, saved.roomCode, res.you);
+            if (res.game.status === "waiting") {
+              // No opponent yet — restore the waiting room, never the
+              // live board. Entering an empty game was the bug.
+              appState.roomCode = saved.roomCode;
+              appState.you = res.you;
+              appState.game = res.game;
+              $("#room-code-text").textContent = saved.roomCode;
+              $("#create-form").classList.add("hidden");
+              $("#create-waiting").classList.remove("hidden");
+              showScreen("screen-create");
+            } else {
+              enterGame(res.game, saved.roomCode, res.you);
+            }
           } else {
             clearSession();
           }
@@ -1083,18 +1095,25 @@ function connectSocket() {
   });
 }
 
-// ---------- session persistence (survive page refresh) ----------
+// ---------- session persistence (survive a refresh, NOT shared across tabs) ----------
+//
+// sessionStorage (not localStorage) is scoped to a single browser tab.
+// This matters a lot for local testing: two tabs of the same browser
+// playing player1 vs player2 previously shared one localStorage key and
+// stomped on each other's saved session — that's what was causing the
+// "enters the game without the other player" and "roast/you-win mixed
+// up" bugs when testing both seats on one machine.
 
 function saveSession(roomCode, playerKey) {
   try {
-    localStorage.setItem("bh21_session", JSON.stringify({ roomCode, playerKey }));
+    sessionStorage.setItem("bh21_session", JSON.stringify({ roomCode, playerKey }));
   } catch (e) {
     /* storage unavailable — reconnection just won't survive a refresh */
   }
 }
 function loadSession() {
   try {
-    const raw = localStorage.getItem("bh21_session");
+    const raw = sessionStorage.getItem("bh21_session");
     return raw ? JSON.parse(raw) : null;
   } catch (e) {
     return null;
@@ -1102,7 +1121,7 @@ function loadSession() {
 }
 function clearSession() {
   try {
-    localStorage.removeItem("bh21_session");
+    sessionStorage.removeItem("bh21_session");
   } catch (e) {}
 }
 
@@ -1112,6 +1131,16 @@ function updateGameState(game, opts = {}) {
   appState.game = game;
   appState.names.player1 = game.players.player1?.name || "Player 1";
   appState.names.player2 = game.players.player2?.name || "Player 2";
+
+  // Safety net: never leave the live board showing while there's no
+  // second player. If some code path lands here with status "waiting"
+  // while the game screen is up, bounce back to the waiting room.
+  if (game.status === "waiting" && $("#screen-game").classList.contains("active")) {
+    $("#room-code-text").textContent = game.roomCode;
+    $("#create-form").classList.add("hidden");
+    $("#create-waiting").classList.remove("hidden");
+    showScreen("screen-create");
+  }
 
   $("#name-player1").textContent = appState.names.player1;
   $("#name-player2").textContent = appState.names.player2;
@@ -1179,7 +1208,9 @@ function renderNumberSelector() {
     }
   }
 
-  const usedSet = new Set(game ? game.usedNumbers : []);
+  // Each player only sees their OWN used digits disappear — the pools
+  // are independent, so an opponent using "9" has no effect on yours.
+  const usedSet = new Set(game && appState.you ? game.usedNumbers[appState.you] : []);
   const canPlay =
     game && game.status === "playing" && game.currentTurn === appState.you && appState.selectedPosition !== null;
 
