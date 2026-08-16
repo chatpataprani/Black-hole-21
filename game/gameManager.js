@@ -8,6 +8,10 @@
 
 const rules = require("./gameRules");
 
+function makeEmptyUsedNumbers() {
+  return { player1: new Set(), player2: new Set() };
+}
+
 function createGameState(roomCode, hostSocketId, hostName) {
   const now = Date.now();
   return {
@@ -24,7 +28,7 @@ function createGameState(roomCode, hostSocketId, hostName) {
     board: rules.createEmptyBoard(),
     currentTurn: "player1",
     moveCount: 0,
-    usedNumbers: new Set(), // digits 1-10 already claimed by either player
+    usedNumbers: makeEmptyUsedNumbers(), // each player has their OWN 1-10 pool
     blackHolePosition: null,
     blackHoleResult: null, // filled once computed
     scores: { player1: 0, player2: 0 },
@@ -60,23 +64,26 @@ function otherKey(playerKey) {
  * Applies a validated move to the game. Assumes isValidMove() already
  * passed - callers (socket handlers) are responsible for validating first.
  *
- * Each digit 1-10 may only ever be placed once across the whole match,
- * so `game.usedNumbers` fills up long before the 21-circle board does.
- * The Black Hole finale triggers as soon as either the board is down to
- * its last empty circle (the original rule) OR every digit has been
- * claimed and no further move is possible - whichever happens first.
+ * Each player has their own independent pool of digits 1-10 (10 possible
+ * moves per player), so a full match always plays out to exactly 20
+ * filled circles — the same "one empty circle left" finale as the
+ * original game, just with the added constraint that nobody repeats
+ * their own number.
  */
 function applyMove(game, playerKey, position, number) {
   game.board[position] = { number, player: playerKey };
-  game.usedNumbers.add(number);
+  game.usedNumbers[playerKey].add(number);
   game.moveCount += 1;
   game.lastActivity = Date.now();
 
+  // The finale only triggers on the classic condition: exactly one
+  // circle left empty. (getBlackHolePosition also knows how to anchor
+  // a hole when more than one circle is empty, but that's a defensive
+  // fallback for abnormal states, not something normal play should
+  // ever reach now that each player's pool is capped independently.)
   const emptyCount = game.board.reduce((n, cell) => n + (cell === null ? 1 : 0), 0);
-  const allDigitsUsed = game.usedNumbers.size >= rules.TOTAL_DIGITS;
-  const shouldTrigger = emptyCount === 1 || (allDigitsUsed && emptyCount > 0);
 
-  if (shouldTrigger) {
+  if (emptyCount === 1) {
     const blackHolePosition = rules.getBlackHolePosition(game.board);
     game.status = "blackhole";
     game.blackHolePosition = blackHolePosition;
@@ -108,7 +115,7 @@ function resetForRematch(game) {
   game.board = rules.createEmptyBoard();
   game.currentTurn = nextStarter;
   game.moveCount = 0;
-  game.usedNumbers = new Set();
+  game.usedNumbers = makeEmptyUsedNumbers();
   game.blackHolePosition = null;
   game.blackHoleResult = null;
   game.scores = { player1: 0, player2: 0 };
@@ -139,8 +146,14 @@ function serializeGame(game) {
     board: game.board,
     currentTurn: game.currentTurn,
     moveCount: game.moveCount,
-    usedNumbers: Array.from(game.usedNumbers),
-    availableNumbers: rules.getAvailableNumbers(game.usedNumbers),
+    usedNumbers: {
+      player1: Array.from(game.usedNumbers.player1),
+      player2: Array.from(game.usedNumbers.player2),
+    },
+    availableNumbers: {
+      player1: rules.getAvailableNumbers(game.usedNumbers.player1),
+      player2: rules.getAvailableNumbers(game.usedNumbers.player2),
+    },
     blackHolePosition: game.blackHolePosition,
     blackHoleResult: game.blackHoleResult,
     scores: game.scores,

@@ -93,8 +93,10 @@ function isValidNumber(num) {
 
 /**
  * Validates a move against full server-authoritative game state.
- * `game.usedNumbers` is expected to be a Set of digits already claimed
- * by either player this match — each digit 1–10 may only be placed once.
+ * `game.usedNumbers` is `{ player1: Set, player2: Set }` — each player has
+ * their OWN independent pool of digits 1–10. A digit player1 has used is
+ * still free for player2, and vice versa; only reusing a digit yourself
+ * is blocked.
  * Returns { valid: true } or { valid: false, reason: "..." }
  */
 function isValidMove(game, playerKey, position, number) {
@@ -104,8 +106,9 @@ function isValidMove(game, playerKey, position, number) {
   if (!isValidPosition(position)) return { valid: false, reason: "Invalid circle." };
   if (game.board[position] !== null) return { valid: false, reason: "Circle already occupied." };
   if (!isValidNumber(number)) return { valid: false, reason: "Number must be between 1 and 10." };
-  if (game.usedNumbers && game.usedNumbers.has(number)) {
-    return { valid: false, reason: "That number has already been used." };
+  const myUsed = game.usedNumbers && game.usedNumbers[playerKey];
+  if (myUsed && myUsed.has(number)) {
+    return { valid: false, reason: "You've already used that number." };
   }
   return { valid: true };
 }
@@ -113,14 +116,11 @@ function isValidMove(game, playerKey, position, number) {
 /**
  * Finds where the Black Hole singularity should anchor.
  *
- * Classic case: exactly one circle is empty (the board filled up) — that
- * circle IS the Black Hole, same as the original rule.
- *
- * With the "each digit used once" rule, the 10 available digits usually
- * run out long before all 21 circles fill. In that case there's no
- * single natural empty circle, so the singularity anchors at the empty
- * circle most surrounded by filled ones (flagged via ties broken by the
- * lowest position id, so the result is deterministic on both clients).
+ * With each player capped at their own 10 unique digits, a match always
+ * plays out to exactly 20 filled circles (10 each) before the 21st —
+ * this is the same "one empty circle left" trigger as the original game.
+ * The multi-empty branch below is kept only as a defensive fallback for
+ * states that shouldn't normally occur.
  */
 function getBlackHolePosition(board) {
   const empty = board.reduce((acc, cell, idx) => {
