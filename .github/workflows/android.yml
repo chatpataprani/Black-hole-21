@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - fix/android-fcm-push
 
 jobs:
   build:
