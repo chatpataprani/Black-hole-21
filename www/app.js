@@ -1,0 +1,1910 @@
+/**
+ * Black Hole 21 — client application.
+ *
+ * The client never decides the winner, score, or Black Hole neighbors.
+ * It renders exactly what the server sends and asks the server before
+ * every move.
+ */
+
+"use strict";
+
+// ============================================================
+// Utilities
+// ============================================================
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+const easeInCubic = (t) => t * t * t;
+const easeInOutSine = (t) => -(Math.cos(Math.PI * t) - 1) / 2;
+const rand = (a, b) => a + Math.random() * (b - a);
+
+// Deterministic-ish pseudo random from a seed, so particle fields feel
+// designed rather than purely chaotic while still varying per hole.
+function mulberry32(seed) {
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function showToast(message) {
+  const toast = $("#toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toast.classList.remove("show"), 3200);
+}
+
+function showScreen(id) {
+  $$(".screen").forEach((s) => s.classList.remove("active"));
+  $(`#${id}`).classList.add("active");
+}
+
+// ============================================================
+// Connection status — discreet indicator + full-screen fallback if the
+// server stays unreachable for a while (e.g. a Render free-tier cold
+// start). Reuses the single existing socket; never opens a second one.
+// ============================================================
+
+let disconnectTimer = null;
+let screenBeforeOffline = null;
+
+function setConnectionStatus(state) {
+  const el = $("#connection-status");
+  if (!el) return;
+  el.classList.remove("connected", "connecting", "reconnecting", "disconnected");
+  el.classList.add(state);
+  const label = {
+    connected: "Connected",
+    connecting: "Connecting…",
+    reconnecting: "Reconnecting…",
+    disconnected: "Disconnected",
+  }[state];
+  const textEl = $("#conn-text");
+  if (textEl) textEl.textContent = label;
+
+  if (state === "connected") {
+    clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+    if ($("#screen-offline").classList.contains("active")) {
+      showScreen(screenBeforeOffline || "screen-home");
+      screenBeforeOffline = null;
+    }
+    return;
+  }
+
+  // Give Socket.IO's built-in auto-reconnect a real chance before
+  // interrupting the person with a full-screen "connection lost" state —
+  // a brief blip shouldn't nuke whatever they were doing.
+  if ((state === "disconnected" || state === "reconnecting") && !disconnectTimer) {
+    disconnectTimer = setTimeout(() => {
+      if (!$("#screen-offline").classList.contains("active")) {
+        const active = $(".screen.active");
+        screenBeforeOffline = active ? active.id : "screen-home";
+      }
+      showScreen("screen-offline");
+    }, 5000);
+  }
+}
+
+// ============================================================
+// Sound engine — procedural Web Audio, no external assets
+// ============================================================
+
+class SoundEngine {
+  constructor() {
+    this.enabled = true; // SFX on/off
+    this.musicEnabled = true;
+    this.volume = 0.8; // SFX master volume 0-1
+    this.musicVolume = 0.55;
+    this.ctx = null;
+    this.masterGain = null; // all SFX route through here
+    this.musicGain = null; // background drone routes through here
+    this.musicNodes = null; // active music oscillators, or null if stopped
+  }
+
+  ensureCtx() {
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      this.ctx = new AC();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.volume;
+      this.masterGain.connect(this.ctx.destination);
+      this.musicGain = this.ctx.createGain();
+      this.musicGain.gain.value = this.musicVolume * 0.35; // ambient bed, stays subtle
+      this.musicGain.connect(this.ctx.destination);
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume();
+    return this.ctx;
+  }
+
+  setEnabled(v) {
+    this.enabled = v;
+  }
+
+  setVolume(v01) {
+    this.volume = clamp(v01, 0, 1);
+    if (this.masterGain) this.masterGain.gain.value = this.volume;
+  }
+
+  setMusicVolume(v01) {
+    this.musicVolume = clamp(v01, 0, 1);
+    if (this.musicGain) this.musicGain.gain.value = this.musicVolume * 0.35;
+  }
+
+  setMusicEnabled(v) {
+    this.musicEnabled = v;
+    if (v) this.startMusic();
+    else this.stopMusic();
+  }
+
+  // Slow, quiet two-tone drone with a gentle LFO drift — deliberately
+  // minimal (a handful of long-lived nodes, not a sample loop) so it
+  // costs almost nothing on a phone CPU.
+  startMusic() {
+    if (!this.musicEnabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx || this.musicNodes) return;
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.type = "sine";
+    osc1.frequency.value = 55;
+    osc2.type = "sine";
+    osc2.frequency.value = 55 * 1.5;
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+    lfo.frequency.value = 0.06;
+    lfoGain.gain.value = 5;
+    lfo.connect(lfoGain).connect(osc2.frequency);
+    osc1.connect(this.musicGain);
+    osc2.connect(this.musicGain);
+    osc1.start();
+    osc2.start();
+    lfo.start();
+    this.musicNodes = { osc1, osc2, lfo };
+  }
+
+  stopMusic() {
+    if (!this.musicNodes) return;
+    const { osc1, osc2, lfo } = this.musicNodes;
+    try {
+      osc1.stop();
+      osc2.stop();
+      lfo.stop();
+    } catch (e) {
+      /* already stopped */
+    }
+    this.musicNodes = null;
+  }
+
+  // Soft click for UI interactions
+  click() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.value = 520;
+    g.gain.setValueAtTime(0.05, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.09);
+  }
+
+  // Rising rumble as the Black Hole forms
+  formationRumble(durationSec = 1.4) {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(40, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + durationSec);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.09, ctx.currentTime + durationSec * 0.7);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + durationSec);
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 300;
+    osc.connect(filter).connect(gain).connect(this.masterGain);
+    osc.start();
+    osc.stop(ctx.currentTime + durationSec + 0.1);
+  }
+
+  // Whoosh + suction when a number gets absorbed
+  suction() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const bufferSize = ctx.sampleRate * 0.35;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(1800, ctx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.35);
+    filter.Q.value = 0.9;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.16, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    noise.connect(filter).connect(gain).connect(this.masterGain);
+    noise.start();
+
+    // impact bass pulse
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(140, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.2);
+    g.gain.setValueAtTime(0.12, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.25);
+  }
+
+  // Deep pulse + short burst for final collapse
+  collapse() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(30, ctx.currentTime);
+    o.frequency.linearRampToValueAtTime(18, ctx.currentTime + 0.5);
+    g.gain.setValueAtTime(0.2, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.65);
+
+    const bufferSize = ctx.sampleRate * 0.15;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    noise.connect(gain).connect(this.masterGain);
+    noise.start();
+  }
+
+  chime(win) {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const notes = win ? [523.25, 659.25, 783.99, 1046.5] : [392, 349.2, 293.7];
+    notes.forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.11;
+      g.gain.setValueAtTime(0.0001, start);
+      g.gain.linearRampToValueAtTime(0.09, start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.55);
+    });
+  }
+
+  // Short two-tone blip, higher/brighter than click() — used for number
+  // selection specifically so it reads differently from a plain button tap.
+  select() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [700, 900].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.045;
+      g.gain.setValueAtTime(0.06, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.07);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.08);
+    });
+  }
+
+  // Solid "thunk" when a number actually lands on the board.
+  place() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(220, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.12);
+    g.gain.setValueAtTime(0.1, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.14);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.15);
+  }
+
+  // Soft rising tick for a turn handoff — deliberately unobtrusive.
+  turnChange() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(440, ctx.currentTime);
+    o.frequency.linearRampToValueAtTime(560, ctx.currentTime + 0.1);
+    g.gain.setValueAtTime(0.045, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.13);
+  }
+
+  // A friend arriving / leaving the room.
+  join() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [500, 700, 900].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.06;
+      g.gain.setValueAtTime(0.07, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.16);
+    });
+  }
+
+  leave() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [700, 500].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.07;
+      g.gain.setValueAtTime(0.06, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.16);
+    });
+  }
+
+  gameStart() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [392, 523.25, 659.25].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "triangle";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.08;
+      g.gain.setValueAtTime(0.08, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.32);
+    });
+  }
+
+  rematch() {
+    this.click();
+  }
+}
+
+const sound = new SoundEngine();
+
+// ============================================================
+// Settings — persisted in localStorage (survives reload / app close,
+// unlike the per-tab session storage used for room reconnection).
+// ============================================================
+
+const SETTINGS_KEY = "bh21_settings";
+const DEFAULT_SETTINGS = {
+  sfx: true,
+  music: true,
+  sfxVolume: 80,
+  musicVolume: 55,
+  vibration: true,
+  notifications: false,
+};
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_SETTINGS, ...parsed };
+  } catch (e) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(s) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch (e) {
+    /* storage unavailable — settings just won't persist */
+  }
+}
+
+const settings = loadSettings();
+
+function applySettingsToEngines() {
+  // Store the flags directly rather than going through setMusicEnabled(),
+  // which would call ensureCtx() and try to start audio immediately —
+  // that has to wait for a real user gesture (see unlockAudioOnce below).
+  sound.setEnabled(settings.sfx);
+  sound.volume = settings.sfxVolume / 100;
+  sound.musicEnabled = settings.music;
+  sound.musicVolume = settings.musicVolume / 100;
+  if (sound.masterGain) sound.masterGain.gain.value = sound.volume;
+  if (sound.musicGain) sound.musicGain.gain.value = sound.musicVolume * 0.35;
+  $$(".sound-toggle").forEach((b) => b.setAttribute("aria-pressed", String(settings.sfx)));
+}
+
+// Web Audio can't play anything before a real user gesture. Unlock and
+// (if enabled) start the ambient bed on the first tap anywhere, then
+// never again — this is the only place audio starts itself.
+let audioUnlocked = false;
+function unlockAudioOnce() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  sound.ensureCtx();
+  if (settings.music) sound.startMusic();
+}
+document.addEventListener("pointerdown", unlockAudioOnce, { once: true });
+
+// Haptic feedback — respects the Vibration setting, silently does
+// nothing where unsupported (iOS Safari, desktop, etc.). Never required
+// for anything to function.
+function vibrate(pattern) {
+  if (!settings.vibration) return;
+  if (typeof navigator === "undefined" || !navigator.vibrate) return;
+  try {
+    navigator.vibrate(pattern);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+// ============================================================
+// Ambient starfield background (always running, subtle)
+// ============================================================
+
+class Starfield {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.stars = [];
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.resize();
+    window.addEventListener("resize", () => this.resize());
+    this.intensity = 1; // can be boosted during Black Hole sequence
+    this.loop = this.loop.bind(this);
+    requestAnimationFrame(this.loop);
+  }
+
+  resize() {
+    this.w = window.innerWidth;
+    this.h = window.innerHeight;
+    this.canvas.width = this.w * this.dpr;
+    this.canvas.height = this.h * this.dpr;
+    this.canvas.style.width = this.w + "px";
+    this.canvas.style.height = this.h + "px";
+    const count = Math.floor((this.w * this.h) / 14000);
+    this.stars = new Array(count).fill(0).map(() => ({
+      x: Math.random() * this.w,
+      y: Math.random() * this.h,
+      r: Math.random() * 1.4 + 0.2,
+      phase: Math.random() * Math.PI * 2,
+      speed: rand(0.2, 0.6),
+      drift: rand(-0.02, 0.02),
+    }));
+  }
+
+  loop(t) {
+    requestAnimationFrame(this.loop);
+    if (document.hidden) return; // skip all work while the tab is backgrounded
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+    for (const s of this.stars) {
+      const tw = 0.5 + 0.5 * Math.sin(t * 0.001 * s.speed + s.phase);
+      s.y += s.drift * this.intensity;
+      if (s.y > this.h) s.y = 0;
+      if (s.y < 0) s.y = this.h;
+      ctx.beginPath();
+      ctx.globalAlpha = (0.25 + tw * 0.6) * clamp(this.intensity, 0.4, 1.6);
+      ctx.fillStyle = "#cfd6ff";
+      ctx.arc(s.x, s.y, s.r * (this.intensity > 1 ? 1.15 : 1), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+const starfield = new Starfield($("#bg-canvas"));
+
+// ============================================================
+// Board rendering
+// ============================================================
+
+const ROWS_LAYOUT = [1, 2, 3, 4, 5, 6]; // circles per row, top to bottom
+const ROW_OFFSETS = (() => {
+  const offsets = [];
+  let cursor = 0;
+  for (const len of ROWS_LAYOUT) {
+    offsets.push(cursor);
+    cursor += len;
+  }
+  return offsets;
+})();
+
+function positionToRowCol(position) {
+  for (let r = ROWS_LAYOUT.length - 1; r >= 0; r--) {
+    if (position >= ROW_OFFSETS[r]) return { row: r, col: position - ROW_OFFSETS[r] };
+  }
+  return { row: 0, col: 0 };
+}
+
+class BoardView {
+  constructor(rootEl) {
+    this.root = rootEl;
+    this.circles = new Map(); // position -> element
+    this.onCircleClick = null;
+    this.build();
+  }
+
+  build() {
+    this.root.innerHTML = "";
+    this.circles.clear();
+    let pos = 0;
+    ROWS_LAYOUT.forEach((len, rowIdx) => {
+      const rowEl = document.createElement("div");
+      rowEl.className = "board-row";
+      for (let c = 0; c < len; c++) {
+        const circle = document.createElement("button");
+        circle.type = "button";
+        circle.className = "circle empty";
+        circle.dataset.position = String(pos);
+        circle.setAttribute("aria-label", `Empty circle, row ${rowIdx + 1}`);
+        circle.addEventListener("click", () => {
+          if (this.onCircleClick) this.onCircleClick(Number(circle.dataset.position));
+        });
+        rowEl.appendChild(circle);
+        this.circles.set(pos, circle);
+        pos++;
+      }
+      this.root.appendChild(rowEl);
+    });
+  }
+
+  getCircle(position) {
+    return this.circles.get(position);
+  }
+
+  /** Renders board state from the server's authoritative board array. */
+  render(board, { currentTurn, you, status } = {}) {
+    board.forEach((cell, position) => {
+      const el = this.circles.get(position);
+      if (!el) return;
+      const wasEmpty = el.classList.contains("empty") && !el.classList.contains("filled");
+      if (cell === null) {
+        el.className = "circle empty selectable";
+        el.textContent = "";
+        el.disabled = false;
+        el.setAttribute("aria-label", "Empty circle");
+      } else {
+        const mine = cell.player === you;
+        el.className = `circle filled ${cell.player === "player1" ? "p1" : "p2"}`;
+        el.textContent = String(cell.number);
+        el.disabled = true;
+        el.setAttribute(
+          "aria-label",
+          `${cell.number}, placed by ${mine ? "you" : "opponent"}`
+        );
+        if (!el.querySelector(".owner-dot")) {
+          const dot = document.createElement("span");
+          dot.className = "owner-dot";
+          el.appendChild(dot);
+        }
+        if (wasEmpty) {
+          el.classList.add("number-pulse");
+          setTimeout(() => el.classList.remove("number-pulse"), 520);
+        }
+      }
+    });
+
+    const canPlay = status === "playing" && currentTurn === you;
+    this.circles.forEach((el) => {
+      if (el.classList.contains("empty")) {
+        el.classList.toggle("selectable", canPlay);
+        el.disabled = !canPlay;
+      }
+    });
+  }
+
+  clearSelection() {
+    this.circles.forEach((el) => el.classList.remove("selected"));
+  }
+
+  select(position) {
+    this.clearSelection();
+    const el = this.circles.get(position);
+    if (el) el.classList.add("selected");
+  }
+
+  /** Returns the DOM rect of a circle relative to a given ancestor element. */
+  relativeRect(position, ancestorEl) {
+    const el = this.circles.get(position);
+    if (!el) return null;
+    const a = ancestorEl.getBoundingClientRect();
+    const b = el.getBoundingClientRect();
+    return {
+      x: b.left - a.left + b.width / 2,
+      y: b.top - a.top + b.height / 2,
+      width: b.width,
+      height: b.height,
+    };
+  }
+}
+
+const boardView = new BoardView($("#board"));
+
+// ============================================================
+// Black Hole cinematic
+//
+// Layers (drawn back-to-front, matching the design spec):
+//   1. background gravitational glow
+//   2. outer particle field
+//   3. rotating accretion disk
+//   4. bright inner disk
+//   5. gravitational distortion (screen-space canvas warping cues)
+//   6. dark event horizon
+//   7. particle vortex (fast inner particles + absorption sparks)
+// ============================================================
+
+class BlackHoleCinematic {
+  constructor(canvas, stageEl, boardView) {
+    this.canvas = canvas;
+    this.stageEl = stageEl;
+    this.boardView = boardView;
+    this.ctx = canvas.getContext("2d");
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.running = false;
+    this.t0 = 0;
+    this.diskGrowth = 0; // 0..1 how "formed" the hole is
+    this.diskSpin = 0; // radians accumulated
+    this.diskSpeed = 0.9; // radians/sec base
+    this.collapseT = 0; // 0..1 during final collapse
+    this.collapsing = false;
+    this.flashAlpha = 0;
+    this.shockwaves = []; // {r, alpha}
+    this.pulses = []; // small energy pulses on absorption
+    this.lines = []; // gravitational connection lines {from:{x,y}, alpha}
+    this.center = { x: 0, y: 0 };
+    this.particles = [];
+    this._raf = null;
+    window.addEventListener("resize", () => this.resize());
+  }
+
+  resize() {
+    const rect = this.stageEl.getBoundingClientRect();
+    this.w = rect.width;
+    this.h = rect.height;
+    this.canvas.width = this.w * this.dpr;
+    this.canvas.height = this.h * this.dpr;
+    this.canvas.style.width = this.w + "px";
+    this.canvas.style.height = this.h + "px";
+  }
+
+  initParticles(seed) {
+    const rng = mulberry32(seed);
+    const count = 90;
+    this.particles = new Array(count).fill(0).map(() => {
+      const angle = rng() * Math.PI * 2;
+      const radius = rand(40, Math.min(this.w, this.h) * 0.62);
+      return {
+        angle,
+        radius,
+        baseRadius: radius,
+        speed: rand(0.4, 1.3),
+        size: rand(0.8, 2.6),
+        bright: rng() > 0.75,
+        trail: rng() > 0.6,
+        hueShift: rng(),
+      };
+    });
+  }
+
+  start(holePosition, neighbors, scores) {
+    this.resize();
+    const rect = this.boardView.relativeRect(holePosition, this.stageEl);
+    this.center = { x: rect.x, y: rect.y };
+    this.holeRadius = rect.width / 2;
+    this.initParticles(holePosition * 7919 + 13);
+    this.running = true;
+    this.diskGrowth = 0;
+    this.collapsing = false;
+    this.collapseT = 0;
+    this.flashAlpha = 0;
+    this._loop(performance.now());
+    return this._sequence(holePosition, neighbors, scores);
+  }
+
+  _loop(t) {
+    if (!this.running) return;
+    this._raf = requestAnimationFrame((tt) => this._loop(tt));
+    this._draw(t);
+  }
+
+  stop() {
+    this.running = false;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  async _sequence(holePosition, neighbors, scores) {
+    await this._formationPause();
+    await this._gravitationalDistortion();
+    await this._growDisk();
+    await this._highlightNeighbors(neighbors);
+    await this._absorbAll(neighbors);
+    await this._collapse();
+    this.stop();
+  }
+
+  // ---------- Stage 1: silence / pause ----------
+  _formationPause() {
+    return new Promise((resolve) => {
+      const holeEl = this.boardView.getCircle(this.currentHolePosition);
+      const distortionEl = $("#board-distortion");
+      distortionEl.style.filter = "brightness(0.75) saturate(0.85)";
+      starfield.intensity = 1.4;
+      const caption = $("#formation-caption");
+      caption.textContent = "THE BLACK HOLE IS FORMING…";
+      caption.classList.remove("hidden");
+      sound.formationRumble(1.1);
+      setTimeout(resolve, 850);
+    });
+  }
+
+  // ---------- Stage 2: gravitational distortion ----------
+  _gravitationalDistortion() {
+    return new Promise((resolve) => {
+      const distortionEl = $("#board-distortion");
+      const start = performance.now();
+      const duration = 650;
+      const shake = (t) => {
+        const elapsed = t - start;
+        const progress = clamp(elapsed / duration, 0, 1);
+        const power = (1 - progress) * 3.5;
+        const dx = (Math.random() - 0.5) * power;
+        const dy = (Math.random() - 0.5) * power;
+        distortionEl.style.transform = `translate(${dx}px, ${dy}px) scale(${1 + power * 0.002})`;
+        if (progress < 1 && this.running) {
+          requestAnimationFrame(shake);
+        } else {
+          distortionEl.style.transform = "";
+          resolve();
+        }
+      };
+      requestAnimationFrame(shake);
+    });
+  }
+
+  // ---------- Stage 3: accretion disk forms ----------
+  _growDisk() {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      const duration = 900;
+      const grow = (t) => {
+        const progress = clamp((t - start) / duration, 0, 1);
+        this.diskGrowth = easeOutCubic(progress);
+        this.diskSpeed = 0.9 + progress * 1.1;
+        if (progress < 1 && this.running) requestAnimationFrame(grow);
+        else resolve();
+      };
+      requestAnimationFrame(grow);
+    });
+  }
+
+  // ---------- Stage 4: highlight neighbors, dim the rest ----------
+  _highlightNeighbors(neighbors) {
+    return new Promise((resolve) => {
+      const allFilled = $$(".circle.filled", this.boardView.root);
+      const neighborPositions = new Set(neighbors.map((n) => n.position));
+      allFilled.forEach((el) => {
+        const pos = Number(el.dataset.position);
+        if (neighborPositions.has(pos)) {
+          el.classList.add("hole-neighbor", "glow");
+        } else {
+          el.classList.add("dim");
+        }
+      });
+      this.lines = neighbors.map((n) => ({
+        from: this.boardView.relativeRect(n.position, this.stageEl),
+        alpha: 0,
+      }));
+      const start = performance.now();
+      const fade = (t) => {
+        const progress = clamp((t - start) / 300, 0, 1);
+        this.lines.forEach((l) => (l.alpha = progress));
+        if (progress < 1 && this.running) requestAnimationFrame(fade);
+        else resolve();
+      };
+      requestAnimationFrame(fade);
+    });
+  }
+
+  // ---------- Stage 5: absorb each neighbor in sequence ----------
+  async _absorbAll(neighbors) {
+    const scoreState = { player1: { sum: 0, parts: [] }, player2: { sum: 0, parts: [] } };
+    $("#score-readout").classList.remove("hidden");
+    $("#score-name-player1").textContent = appState.names.player1;
+    $("#score-name-player2").textContent = appState.names.player2;
+
+    for (let i = 0; i < neighbors.length; i++) {
+      const n = neighbors[i];
+      await this._absorbOne(n);
+      scoreState[n.player].parts.push(n.number);
+      const prevSum = scoreState[n.player].sum;
+      scoreState[n.player].sum += n.number;
+      $(`#score-sum-player${n.player === "player1" ? 1 : 2}`).textContent =
+        scoreState[n.player].parts.join(" + ");
+      await animateCountUp(
+        $(`#score-total-player${n.player === "player1" ? 1 : 2}`),
+        prevSum,
+        scoreState[n.player].sum,
+        "= "
+      );
+      await wait(120);
+    }
+  }
+
+  _absorbOne(neighbor) {
+    return new Promise((resolve) => {
+      const el = this.boardView.getCircle(neighbor.position);
+      if (!el) return resolve();
+      el.classList.add("shake");
+      sound.click();
+
+      setTimeout(() => {
+        const startRect = this.boardView.relativeRect(neighbor.position, this.stageEl);
+        el.classList.add("consumed");
+
+        const flying = document.createElement("div");
+        flying.className = `flying-number ${neighbor.player === "player1" ? "p1" : "p2"}`;
+        flying.textContent = String(neighbor.number);
+        Object.assign(flying.style, {
+          position: "absolute",
+          left: "0px",
+          top: "0px",
+          width: startRect.width + "px",
+          height: startRect.height + "px",
+          borderRadius: "50%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "var(--font-display)",
+          fontWeight: "700",
+          fontSize: "1.1rem",
+          color: "#fff",
+          background:
+            neighbor.player === "player1"
+              ? "radial-gradient(circle at 35% 30%, rgba(90,209,255,0.9), rgba(20,40,70,0.9))"
+              : "radial-gradient(circle at 35% 30%, rgba(255,138,92,0.9), rgba(60,30,20,0.9))",
+          boxShadow:
+            neighbor.player === "player1"
+              ? "0 0 18px rgba(90,209,255,0.75)"
+              : "0 0 18px rgba(255,138,92,0.75)",
+          zIndex: 6,
+          pointerEvents: "none",
+          willChange: "transform, opacity",
+        });
+        this.stageEl.appendChild(flying);
+
+        // Curved control point: offset perpendicular to the straight path,
+        // biased in the disk's rotation direction for a swirling pull.
+        const x1 = startRect.x, y1 = startRect.y;
+        const x2 = this.center.x, y2 = this.center.y;
+        const dx = x2 - x1, dy = y2 - y1;
+        const dist = Math.hypot(dx, dy) || 1;
+        const nx = -dy / dist, ny = dx / dist; // perpendicular (rotation direction)
+        const bow = dist * rand(0.28, 0.42);
+        const cx = (x1 + x2) / 2 + nx * bow;
+        const cy = (y1 + y2) / 2 + ny * bow;
+
+        const duration = clamp(dist * 2.1, 420, 780);
+        const start = performance.now();
+        const spinTotal = rand(260, 420);
+
+        const step = (t) => {
+          const raw = clamp((t - start) / duration, 0, 1);
+          const posT = easeInCubic(raw); // accelerating pull
+          const bx = (1 - posT) * (1 - posT) * x1 + 2 * (1 - posT) * posT * cx + posT * posT * x2;
+          const by = (1 - posT) * (1 - posT) * y1 + 2 * (1 - posT) * posT * cy + posT * posT * y2;
+
+          const stretch = 1 + 0.35 * Math.sin(Math.min(raw, 0.7) * Math.PI);
+          const shrink = raw < 0.55 ? 1 : lerp(1, 0.08, easeInCubic((raw - 0.55) / 0.45));
+          const rotate = raw * spinTotal;
+          const opacity = raw < 0.8 ? 1 : lerp(1, 0, (raw - 0.8) / 0.2);
+
+          flying.style.transform =
+            `translate(${bx - startRect.width / 2}px, ${by - startRect.height / 2}px) ` +
+            `rotate(${rotate}deg) scale(${shrink * stretch}, ${shrink / Math.sqrt(stretch)})`;
+          flying.style.opacity = String(opacity);
+
+          if (raw < 1 && this.running) {
+            requestAnimationFrame(step);
+          } else {
+            flying.remove();
+            this.pulses.push({ r: 4, alpha: 1 });
+            sound.suction();
+            vibrate(12);
+            resolve();
+          }
+        };
+        requestAnimationFrame(step);
+      }, 260);
+    });
+  }
+
+  // ---------- Stage 6: final collapse ----------
+  _collapse() {
+    return new Promise((resolve) => {
+      const caption = $("#formation-caption");
+      caption.classList.add("hidden");
+      this.collapsing = true;
+      sound.collapse();
+      const start = performance.now();
+      const duration = 1100;
+      const step = (t) => {
+        const progress = clamp((t - start) / duration, 0, 1);
+        this.collapseT = progress;
+        this.diskSpeed = 2 + progress * 9;
+        if (progress > 0.55 && progress < 0.62) this.flashAlpha = 1;
+        this.flashAlpha *= 0.92;
+        if (progress > 0.6 && this.shockwaves.length === 0) {
+          this.shockwaves.push({ r: this.holeRadius, alpha: 0.9 });
+        }
+        if (progress < 1 && this.running) requestAnimationFrame(step);
+        else {
+          starfield.intensity = 1;
+          resolve();
+        }
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  _draw(now) {
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+    const { x: cx, y: cy } = this.center;
+    if (!cx && !cy) return;
+
+    const growth = this.diskGrowth;
+    this.diskSpin += (this.diskSpeed / 60) * (this.running ? 1 : 0);
+    const collapseScale = this.collapsing ? lerp(1, 0.15, easeInCubic(this.collapseT)) : 1;
+
+    // ---- Layer 1: background gravitational glow ----
+    const glowR = (this.holeRadius * 6 + 40) * (0.6 + growth * 0.6) * collapseScale;
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+    glow.addColorStop(0, `rgba(111,92,255,${0.16 * growth})`);
+    glow.addColorStop(0.5, `rgba(62,168,255,${0.08 * growth})`);
+    glow.addColorStop(1, "rgba(10,10,20,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, this.w, this.h);
+
+    // ---- gravitational connection lines to neighbors ----
+    this.lines.forEach((l) => {
+      if (l.alpha <= 0) return;
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,157,61,${0.45 * l.alpha})`;
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([5, 6]);
+      ctx.lineDashOffset = -now * 0.03;
+      ctx.beginPath();
+      ctx.moveTo(l.from.x, l.from.y);
+      ctx.lineTo(cx, cy);
+      ctx.stroke();
+      ctx.restore();
+    });
+
+    // ---- Layer 2: outer particle field ----
+    for (const p of this.particles) {
+      const pull = 0.15 + growth * 0.85 + (this.collapsing ? this.collapseT * 2 : 0);
+      p.radius -= p.speed * pull * 0.6;
+      p.angle += (p.speed * 0.01) * (1 + growth * 1.5);
+      if (p.radius < this.holeRadius * 0.7 * collapseScale) {
+        p.radius = p.baseRadius * rand(0.8, 1.05);
+        p.angle = Math.random() * Math.PI * 2;
+      }
+      const px = cx + Math.cos(p.angle) * p.radius * collapseScale;
+      const py = cy + Math.sin(p.angle) * p.radius * collapseScale * 0.94;
+      const alpha = clamp(growth * (p.bright ? 0.9 : 0.5), 0, 1);
+      ctx.beginPath();
+      ctx.fillStyle = p.bright
+        ? `rgba(255,226,138,${alpha})`
+        : `rgba(180,190,255,${alpha * 0.8})`;
+      ctx.arc(px, py, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      if (p.trail) {
+        const tx = cx + Math.cos(p.angle - 0.12) * p.radius * collapseScale;
+        const ty = cy + Math.sin(p.angle - 0.12) * p.radius * collapseScale * 0.94;
+        ctx.strokeStyle = `rgba(255,157,61,${alpha * 0.4})`;
+        ctx.lineWidth = p.size * 0.6;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(tx, ty);
+        ctx.stroke();
+      }
+    }
+
+    if (growth > 0.02) {
+      // ---- Layer 3: rotating accretion disk (multi-layer ellipse rings) ----
+      const baseR = this.holeRadius * (1.6 + growth * 1.9) * collapseScale;
+      for (let layer = 0; layer < 4; layer++) {
+        const layerR = baseR * (1 - layer * 0.17);
+        const squish = 0.38 + layer * 0.04;
+        const speed = this.diskSpin * (1 + layer * 0.35) * (layer % 2 === 0 ? 1 : -1);
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(speed);
+        const grad = ctx.createLinearGradient(-layerR, 0, layerR, 0);
+        grad.addColorStop(0, `rgba(111,92,255,${0.05 * growth})`);
+        grad.addColorStop(0.45, `rgba(255,157,61,${0.55 * growth})`);
+        grad.addColorStop(0.5, `rgba(255,226,138,${0.85 * growth})`);
+        grad.addColorStop(0.55, `rgba(255,157,61,${0.55 * growth})`);
+        grad.addColorStop(1, `rgba(62,168,255,${0.05 * growth})`);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = layerR * (0.06 + layer * 0.01);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, layerR, layerR * squish, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ---- Layer 4: bright inner disk ----
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(this.diskSpin * 1.6);
+      const innerR = this.holeRadius * (1.15 + growth * 0.4) * collapseScale;
+      const innerGrad = ctx.createRadialGradient(0, 0, innerR * 0.2, 0, 0, innerR);
+      innerGrad.addColorStop(0, `rgba(255,255,255,${0.9 * growth})`);
+      innerGrad.addColorStop(0.4, `rgba(255,226,138,${0.7 * growth})`);
+      innerGrad.addColorStop(1, "rgba(255,157,61,0)");
+      ctx.fillStyle = innerGrad;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, innerR, innerR * 0.42, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ---- Layer 6: dark event horizon (singularity) ----
+    const horizonR = this.holeRadius * (0.55 + growth * 0.55) * collapseScale;
+    const horizonGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, horizonR);
+    horizonGrad.addColorStop(0, "rgba(0,0,0,1)");
+    horizonGrad.addColorStop(0.85, "rgba(4,4,10,0.98)");
+    horizonGrad.addColorStop(1, "rgba(4,4,10,0)");
+    ctx.fillStyle = horizonGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, horizonR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ---- Layer 7: absorption pulses ----
+    this.pulses.forEach((p) => {
+      p.r += 3.5;
+      p.alpha *= 0.88;
+    });
+    this.pulses = this.pulses.filter((p) => p.alpha > 0.02);
+    this.pulses.forEach((p) => {
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(255,226,138,${p.alpha})`;
+      ctx.lineWidth = 2;
+      ctx.arc(cx, cy, horizonR + p.r, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    // ---- Collapse flash + shockwave ----
+    if (this.flashAlpha > 0.01) {
+      ctx.fillStyle = `rgba(255,255,255,${this.flashAlpha})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, horizonR * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    this.shockwaves.forEach((s) => {
+      s.r += 14;
+      s.alpha *= 0.93;
+    });
+    this.shockwaves = this.shockwaves.filter((s) => s.alpha > 0.02);
+    this.shockwaves.forEach((s) => {
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(200,210,255,${s.alpha})`;
+      ctx.lineWidth = 3;
+      ctx.arc(cx, cy, s.r, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+  }
+}
+
+function wait(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function animateCountUp(el, from, to, prefix = "") {
+  return new Promise((resolve) => {
+    const duration = 320;
+    const start = performance.now();
+    const step = (t) => {
+      const progress = clamp((t - start) / duration, 0, 1);
+      const val = Math.round(lerp(from, to, easeOutCubic(progress)));
+      el.textContent = prefix + val;
+      if (progress < 1) requestAnimationFrame(step);
+      else {
+        el.textContent = prefix + to;
+        el.classList.add("number-pulse");
+        setTimeout(() => el.classList.remove("number-pulse"), 300);
+        resolve();
+      }
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+// ============================================================
+// Winner screen cosmic particles (not confetti — drifting embers/stardust)
+// ============================================================
+
+class WinnerParticles {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.particles = [];
+    this.running = false;
+  }
+
+  resize() {
+    this.w = window.innerWidth;
+    this.h = window.innerHeight;
+    this.canvas.width = this.w * this.dpr;
+    this.canvas.height = this.h * this.dpr;
+    this.canvas.style.width = this.w + "px";
+    this.canvas.style.height = this.h + "px";
+  }
+
+  burst() {
+    this.resize();
+    this.running = true;
+    const cx = this.w / 2;
+    const cy = this.h * 0.32;
+    this.particles = new Array(70).fill(0).map(() => {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = rand(1, 5);
+      return {
+        x: cx,
+        y: cy,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1,
+        life: 1,
+        decay: rand(0.006, 0.014),
+        size: rand(1, 3.2),
+        color: Math.random() > 0.5 ? "255,226,138" : "111,146,255",
+      };
+    });
+    this._loop();
+    setTimeout(() => {
+      this.running = false;
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }, 3200);
+  }
+
+  _loop() {
+    if (!this.running) return;
+    requestAnimationFrame(() => this._loop());
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+    this.particles.forEach((p) => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.02;
+      p.vx *= 0.99;
+      p.life -= p.decay;
+      if (p.life <= 0) return;
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(${p.color},${p.life})`;
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    this.particles = this.particles.filter((p) => p.life > 0);
+  }
+}
+
+const winnerParticles = new WinnerParticles($("#winner-canvas"));
+
+// ============================================================
+// Post-game flavor text. Loser gets roasted, winner gets a dry flex.
+// Picked client-side per player — purely cosmetic, doesn't touch the
+// server-authoritative result.
+// ============================================================
+
+const ROAST_LINES = [
+  "the black hole had standards. you didn't meet them.",
+  "gravity picked a side. it wasn't yours.",
+  "even the void looked away.",
+  "some people learn from their mistakes. anyway.",
+  "the math wasn't on your side. nothing was.",
+  "singularity: 1. you: catastrophically less.",
+  "that's not a loss, that's a warning sign.",
+  "the numbers added up. you didn't.",
+  "well. that happened.",
+  "you brought strategy. it stayed home.",
+];
+
+const FLEX_LINES = [
+  "the black hole answers to you now.",
+  "cold math, colder win.",
+  "gravity had no choice.",
+  "some are born lucky. you did the math.",
+  "the void respects efficiency.",
+  "not luck. arithmetic.",
+];
+
+function pickLine(lines) {
+  return lines[Math.floor(Math.random() * lines.length)];
+}
+
+// ============================================================
+// Main application state + socket wiring
+// ============================================================
+
+const appState = {
+  socket: null,
+  roomCode: null,
+  you: null, // "player1" | "player2"
+  game: null, // last serialized game from server
+  selectedPosition: null,
+  names: { player1: "Player 1", player2: "Player 2" },
+  cinematicPlayed: false,
+};
+
+const blackHoleCinematic = new BlackHoleCinematic(
+  $("#blackhole-canvas"),
+  $("#board-stage"),
+  boardView
+);
+
+function connectSocket() {
+  const socket = io();
+  appState.socket = socket;
+
+  socket.on("connect", () => {
+    // Attempt silent reconnection if we have a saved session.
+    const saved = loadSession();
+    if (saved && saved.roomCode && saved.playerKey) {
+      socket.emit(
+        "reconnect_room",
+        { roomCode: saved.roomCode, playerKey: saved.playerKey },
+        (res) => {
+          if (res && res.ok) {
+            if (res.game.status === "waiting") {
+              // No opponent yet — restore the waiting room, never the
+              // live board. Entering an empty game was the bug.
+              appState.roomCode = saved.roomCode;
+              appState.you = res.you;
+              appState.game = res.game;
+              $("#room-code-text").textContent = saved.roomCode;
+              $("#create-form").classList.add("hidden");
+              $("#create-waiting").classList.remove("hidden");
+              showScreen("screen-create");
+            } else {
+              enterGame(res.game, saved.roomCode, res.you);
+            }
+          } else {
+            clearSession();
+          }
+        }
+      );
+    }
+  });
+
+  socket.on("error_message", (payload) => {
+    showToast(payload?.message || "Something went wrong.");
+  });
+
+  socket.on("player_joined", ({ game }) => {
+    updateGameState(game);
+    if (game.status === "playing") sound.join();
+    if (game.status === "playing" && appState.roomCode) {
+      // Host transitions from waiting room into the game.
+      if ($("#screen-create").classList.contains("active") || $("#screen-join").classList.contains("active")) {
+        enterGame(game, appState.roomCode, appState.you);
+      }
+    }
+  });
+
+  socket.on("game_started", ({ game }) => {
+    updateGameState(game);
+    sound.gameStart();
+    vibrate(25);
+  });
+
+  socket.on("move_made", ({ game }) => {
+    updateGameState(game);
+  });
+
+  socket.on("black_hole_started", ({ game }) => {
+    // Render normally first so the 20th move's number appears on the
+    // board (status is already "blackhole", so render() automatically
+    // makes every circle non-interactive) before the cinematic begins.
+    updateGameState(game);
+    runBlackHoleSequence(game);
+  });
+
+  socket.on("game_finished", ({ game }) => {
+    updateGameState(game);
+  });
+
+  socket.on("player_disconnected", ({ game, player }) => {
+    updateGameState(game);
+    sound.leave();
+    const name = appState.names[player] || "Opponent";
+    const status = $("#opponent-status");
+    status.textContent = `${name} disconnected — waiting for reconnection…`;
+    status.classList.remove("hidden");
+  });
+
+  socket.on("player_reconnected", ({ game }) => {
+    updateGameState(game);
+    sound.join();
+    $("#opponent-status").classList.add("hidden");
+  });
+
+  socket.on("rematch", ({ game }) => {
+    updateGameState(game);
+    appState.cinematicPlayed = false;
+    resetBoardVisuals();
+    showScreen("screen-game");
+  });
+
+  // ---- connection status (discreet indicator, auto-reconnect handled
+  // by Socket.IO itself — we only reflect state, never open a 2nd socket) ----
+  setConnectionStatus("connecting");
+
+  socket.on("connect", () => setConnectionStatus("connected"));
+  socket.on("disconnect", () => setConnectionStatus("disconnected"));
+
+  // socket.io (the Manager) fires these on its own — NOT on `socket`
+  // itself — during automatic reconnection attempts.
+  socket.io.on("reconnect_attempt", () => setConnectionStatus("reconnecting"));
+  socket.io.on("reconnect", () => setConnectionStatus("connected"));
+  socket.io.on("reconnect_failed", () => setConnectionStatus("disconnected"));
+}
+
+// ---------- session persistence (survive a refresh, NOT shared across tabs) ----------
+//
+// sessionStorage (not localStorage) is scoped to a single browser tab.
+// This matters a lot for local testing: two tabs of the same browser
+// playing player1 vs player2 previously shared one localStorage key and
+// stomped on each other's saved session — that's what was causing the
+// "enters the game without the other player" and "roast/you-win mixed
+// up" bugs when testing both seats on one machine.
+
+function saveSession(roomCode, playerKey) {
+  try {
+    sessionStorage.setItem("bh21_session", JSON.stringify({ roomCode, playerKey }));
+  } catch (e) {
+    /* storage unavailable — reconnection just won't survive a refresh */
+  }
+}
+function loadSession() {
+  try {
+    const raw = sessionStorage.getItem("bh21_session");
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+function clearSession() {
+  try {
+    sessionStorage.removeItem("bh21_session");
+  } catch (e) {}
+}
+
+// ---------- game state -> UI ----------
+
+function updateGameState(game, opts = {}) {
+  appState.game = game;
+  appState.names.player1 = game.players.player1?.name || "Player 1";
+  appState.names.player2 = game.players.player2?.name || "Player 2";
+
+  // Safety net: never leave the live board showing while there's no
+  // second player. If some code path lands here with status "waiting"
+  // while the game screen is up, bounce back to the waiting room.
+  if (game.status === "waiting" && $("#screen-game").classList.contains("active")) {
+    $("#room-code-text").textContent = game.roomCode;
+    $("#create-form").classList.add("hidden");
+    $("#create-waiting").classList.remove("hidden");
+    showScreen("screen-create");
+  }
+
+  $("#name-player1").textContent = appState.names.player1;
+  $("#name-player2").textContent = appState.names.player2;
+  $("#chip-player1").classList.toggle("active-turn", game.currentTurn === "player1");
+  $("#chip-player2").classList.toggle("active-turn", game.currentTurn === "player2");
+
+  if (game.players.player2 && game.players.player2.connected !== false) {
+    $("#opponent-status").classList.add("hidden");
+  }
+
+  // Digits used out of 10 is the real progress metric now that each
+  // number is single-use — moveCount already equals it 1:1.
+  $("#move-counter").textContent = `${game.moveCount}/10 digits used`;
+
+  const turnEl = $("#turn-text");
+  if (game.status === "playing") {
+    const myTurn = game.currentTurn === appState.you;
+    const newText = myTurn ? "YOUR TURN" : "OPPONENT'S TURN";
+    if (appState.lastTurnText !== newText) {
+      // One-shot flash on change only — never a looping animation, so
+      // there's no continuous repaint cost while a turn just sits idle.
+      turnEl.classList.remove("turn-flash");
+      void turnEl.offsetWidth; // restart the animation
+      turnEl.classList.add("turn-flash");
+      // Only cue sound/haptics once we've already shown a turn before
+      // (skip the very first render) and only when it becomes YOUR turn,
+      // so it doesn't buzz every broadcast.
+      if (appState.lastTurnText !== null && myTurn) {
+        sound.turnChange();
+        vibrate(20);
+      }
+      appState.lastTurnText = newText;
+    }
+    turnEl.textContent = newText;
+    turnEl.classList.toggle("your-turn", myTurn);
+    turnEl.classList.toggle("opponent-turn", !myTurn);
+    $("#selector-hint").textContent = myTurn
+      ? appState.selectedPosition !== null
+        ? "Pick a number 1–10"
+        : "Choose a circle, then a number"
+      : "Waiting for opponent…";
+  } else if (game.status === "waiting") {
+    turnEl.textContent = "WAITING FOR OPPONENT…";
+    turnEl.classList.remove("your-turn", "opponent-turn", "turn-flash");
+    appState.lastTurnText = null;
+  }
+
+  boardView.render(game.board, { currentTurn: game.currentTurn, you: appState.you, status: game.status });
+
+  renderNumberSelector();
+}
+
+// Persistent number-button references so a state update only ever
+// touches the specific buttons that changed, instead of tearing down
+// and rebuilding all 10 every time a move comes in.
+const numberButtons = new Map();
+
+function renderNumberSelector() {
+  const wrap = $("#number-selector");
+  const game = appState.game;
+
+  if (numberButtons.size === 0) {
+    for (let n = 1; n <= 10; n++) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "num-btn";
+      btn.textContent = String(n);
+      btn.dataset.number = String(n);
+      btn.addEventListener("click", () => onNumberChosen(n));
+      wrap.appendChild(btn);
+      numberButtons.set(n, btn);
+    }
+  }
+
+  // Each player only sees their OWN used digits disappear — the pools
+  // are independent, so an opponent using "9" has no effect on yours.
+  const usedSet = new Set(game && appState.you ? game.usedNumbers[appState.you] : []);
+  const canPlay =
+    game && game.status === "playing" && game.currentTurn === appState.you && appState.selectedPosition !== null;
+
+  numberButtons.forEach((btn, n) => {
+    if (usedSet.has(n)) {
+      // Used digits disappear for good — a short scale/opacity animation,
+      // then removed from the DOM so the grid reflows the rest cleanly.
+      if (btn.isConnected && !btn.classList.contains("leaving")) {
+        btn.classList.add("leaving");
+        btn.disabled = true;
+        setTimeout(() => btn.remove(), 230);
+      }
+    } else {
+      btn.disabled = !canPlay;
+    }
+  });
+}
+
+function onCircleChosen(position) {
+  const game = appState.game;
+  if (!game || game.status !== "playing" || game.currentTurn !== appState.you) return;
+  if (game.board[position] !== null) return;
+  appState.selectedPosition = position;
+  boardView.select(position);
+  sound.select();
+  vibrate(10);
+  $("#selector-hint").textContent = "Pick a number 1–10";
+  renderNumberSelector();
+}
+
+function onNumberChosen(number) {
+  const game = appState.game;
+  if (!game || appState.selectedPosition === null) return;
+  if (game.currentTurn !== appState.you) return;
+  sound.place();
+  vibrate(15);
+
+  const position = appState.selectedPosition;
+  $$(".num-btn").forEach((b) => b.disabled = true);
+
+  appState.socket.emit("make_move", { roomCode: appState.roomCode, position, number }, (res) => {
+    if (!res.ok) {
+      showToast(res.message || "Move rejected.");
+      renderNumberSelector();
+    } else {
+      appState.selectedPosition = null;
+      boardView.clearSelection();
+    }
+  });
+}
+
+function resetBoardVisuals() {
+  boardView.build();
+  boardView.onCircleClick = onCircleChosen;
+  appState.selectedPosition = null;
+  appState.lastTurnText = null;
+  $("#formation-caption").classList.add("hidden");
+  $("#score-readout").classList.add("hidden");
+  $("#score-sum-player1").textContent = "";
+  $("#score-sum-player2").textContent = "";
+  $("#score-total-player1").textContent = "= 0";
+  $("#score-total-player2").textContent = "= 0";
+  $$(".circle", boardView.root).forEach((c) =>
+    c.classList.remove("dim", "hole-neighbor", "glow", "consumed", "shake")
+  );
+  $("#board-distortion").style.filter = "";
+  $("#board-distortion").style.transform = "";
+
+  // A fresh match means every digit 1–10 is available again — rebuild
+  // the selector from scratch rather than trying to resurrect buttons
+  // that already animated out.
+  $("#number-selector").innerHTML = "";
+  numberButtons.clear();
+
+  if (appState.game) {
+    boardView.render(appState.game.board, {
+      currentTurn: appState.game.currentTurn,
+      you: appState.you,
+      status: appState.game.status,
+    });
+  }
+}
+
+function enterGame(game, roomCode, you) {
+  appState.roomCode = roomCode;
+  appState.you = you;
+  saveSession(roomCode, you);
+  resetBoardVisuals();
+  updateGameState(game);
+  showScreen("screen-game");
+}
+
+async function runBlackHoleSequence(game) {
+  if (appState.cinematicPlayed) return;
+  appState.cinematicPlayed = true;
+  boardView.onCircleClick = null;
+  $("#selector-wrap").classList.add("hidden");
+  blackHoleCinematic.currentHolePosition = game.blackHolePosition;
+  vibrate([30, 60, 30]);
+
+  const { neighbors, scores } = game.blackHoleResult;
+  await blackHoleCinematic.start(game.blackHolePosition, neighbors, scores);
+
+  starfield.intensity = 1;
+  $("#selector-wrap").classList.remove("hidden");
+  appState.socket.emit("black_hole_finished", { roomCode: appState.roomCode });
+  await wait(300);
+  revealWinner(game);
+}
+
+function revealWinner(game) {
+  const { scores, winner } = game;
+  $("#wname-player1").textContent = appState.names.player1;
+  $("#wname-player2").textContent = appState.names.player2;
+  $("#wscore-player1").textContent = "0";
+  $("#wscore-player2").textContent = "0";
+
+  const p1Block = $("#winner-score-player1");
+  const p2Block = $("#winner-score-player2");
+  p1Block.classList.remove("is-winner");
+  p2Block.classList.remove("is-winner");
+
+  const subtitle = $("#winner-subtitle");
+  const title = $("#winner-title");
+  const trophy = $("#winner-trophy");
+  const resultLine = $("#result-line");
+
+  title.classList.remove("you-win", "you-lose", "you-draw");
+  trophy.classList.remove("you-lose");
+  resultLine.classList.remove("roast", "flex");
+  resultLine.classList.add("hidden");
+  resultLine.textContent = "";
+
+  const isDraw = winner === "draw";
+  const iWon = !isDraw && winner === appState.you;
+
+  if (isDraw) {
+    title.textContent = "DRAW";
+    title.classList.add("you-draw");
+    subtitle.textContent = "THE BLACK HOLE COULDN'T DECIDE.";
+    subtitle.classList.remove("hidden");
+    trophy.textContent = "🌌";
+  } else if (iWon) {
+    title.textContent = "YOU WIN";
+    title.classList.add("you-win");
+    subtitle.classList.add("hidden");
+    trophy.textContent = "🏆";
+    resultLine.textContent = pickLine(FLEX_LINES);
+    resultLine.classList.add("flex");
+    resultLine.classList.remove("hidden");
+    (winner === "player1" ? p1Block : p2Block).classList.add("is-winner");
+  } else {
+    title.textContent = "YOU LOSE";
+    title.classList.add("you-lose");
+    subtitle.classList.add("hidden");
+    trophy.textContent = "💀";
+    trophy.classList.add("you-lose");
+    resultLine.textContent = pickLine(ROAST_LINES);
+    resultLine.classList.add("roast");
+    resultLine.classList.remove("hidden");
+    (winner === "player1" ? p1Block : p2Block).classList.add("is-winner");
+  }
+
+  showScreen("screen-winner");
+  animateCountUp($("#wscore-player1"), 0, scores.player1, "");
+  animateCountUp($("#wscore-player2"), 0, scores.player2, "");
+  sound.chime(iWon);
+  vibrate(isDraw ? [40, 40, 40] : iWon ? [30, 40, 30, 40, 60] : [80]);
+  if (iWon) winnerParticles.burst();
+}
+
+// ============================================================
+// Screen navigation + form handlers
+// ============================================================
+
+$$("[data-back-to]").forEach((btn) => {
+  btn.addEventListener("click", () => showScreen(btn.dataset.backTo));
+});
+
+$("#btn-goto-play").addEventListener("click", () => {
+  sound.click();
+  showScreen("screen-play");
+});
+$("#btn-goto-settings").addEventListener("click", () => {
+  sound.click();
+  refreshSettingsUI();
+  showScreen("screen-settings");
+});
+$("#btn-goto-about").addEventListener("click", () => {
+  sound.click();
+  showScreen("screen-about");
+});
+
+$("#btn-goto-create").addEventListener("click", () => {
+  $("#create-form").classList.remove("hidden");
+  $("#create-waiting").classList.add("hidden");
+  showScreen("screen-create");
+});
+$("#btn-goto-join").addEventListener("click", () => showScreen("screen-join"));
+$("#btn-how-to-play").addEventListener("click", () => showScreen("screen-how"));
+
+$("#btn-create-submit").addEventListener("click", () => {
+  const name = $("#create-name").value.trim() || "Player 1";
+  $("#btn-create-submit").disabled = true;
+  appState.socket.emit("create_room", { name }, (res) => {
+    $("#btn-create-submit").disabled = false;
+    if (!res.ok) return showToast(res.message || "Could not create room.");
+    appState.roomCode = res.roomCode;
+    appState.you = res.you;
+    appState.game = res.game;
+    appState.names.player1 = name;
+    saveSession(res.roomCode, res.you);
+    $("#room-code-text").textContent = res.roomCode;
+    $("#create-form").classList.add("hidden");
+    $("#create-waiting").classList.remove("hidden");
+  });
+});
+
+$("#btn-copy-code").addEventListener("click", async () => {
+  const code = $("#room-code-text").textContent;
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast("Room code copied");
+  } catch (e) {
+    showToast(code);
+  }
+});
+
+$("#btn-join-submit").addEventListener("click", () => {
+  const name = $("#join-name").value.trim() || "Player 2";
+  const code = $("#join-code").value.trim().toUpperCase();
+  if (!code) return showToast("Enter a room code.");
+  $("#btn-join-submit").disabled = true;
+  appState.socket.emit("join_room", { name, roomCode: code }, (res) => {
+    $("#btn-join-submit").disabled = false;
+    if (!res.ok) return showToast(res.message || "Could not join room.");
+    appState.names[res.you] = name;
+    enterGame(res.game, res.roomCode, res.you);
+  });
+});
+
+$("#btn-play-again").addEventListener("click", () => {
+  $("#btn-play-again").disabled = true;
+  appState.socket.emit("rematch", { roomCode: appState.roomCode }, (res) => {
+    $("#btn-play-again").disabled = false;
+    if (res && !res.ok) showToast(res.message || "Could not start rematch.");
+  });
+});
+
+$("#btn-new-game").addEventListener("click", () => {
+  clearSession();
+  appState.roomCode = null;
+  appState.you = null;
+  appState.game = null;
+  appState.cinematicPlayed = false;
+  $("#create-form").classList.remove("hidden");
+  $("#create-waiting").classList.add("hidden");
+  showScreen("screen-create");
+});
+
+$("#btn-home").addEventListener("click", () => {
+  clearSession();
+  appState.roomCode = null;
+  appState.you = null;
+  appState.game = null;
+  appState.cinematicPlayed = false;
+  showScreen("screen-home");
+});
+
+function bindSoundToggle(btn) {
+  btn.addEventListener("click", () => setSfxEnabled(!settings.sfx));
+}
+bindSoundToggle($("#btn-sound-toggle"));
+bindSoundToggle($("#btn-sound-toggle-game"));
+
+// Room code input: auto-uppercase as the player types
+$("#join-code").addEventListener("input", (e) => {
+  e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
+});
+
+$("#btn-retry-connection").addEventListener("click", () => {
+  sound.click();
+  setConnectionStatus("connecting");
+  appState.socket.connect(); // reconnects the SAME socket — never opens a second one
+});
+
+// ============================================================
+// Settings screen wiring
+// ============================================================
+
+function setSfxEnabled(v) {
+  settings.sfx = v;
+  sound.setEnabled(v);
+  saveSettings(settings);
+  $$(".sound-toggle").forEach((b) => b.setAttribute("aria-pressed", String(v)));
+  const sw = $("#toggle-sfx");
+  if (sw) sw.setAttribute("aria-checked", String(v));
+  if (v) sound.ensureCtx();
+}
+
+function refreshSettingsUI() {
+  $("#toggle-sfx").setAttribute("aria-checked", String(settings.sfx));
+  $("#toggle-music").setAttribute("aria-checked", String(settings.music));
+  $("#toggle-vibration").setAttribute("aria-checked", String(settings.vibration));
+  $("#toggle-notifications").setAttribute("aria-checked", String(settings.notifications));
+  $("#slider-sfx-volume").value = settings.sfxVolume;
+  $("#slider-music-volume").value = settings.musicVolume;
+}
+
+function bindToggle(id, onChange) {
+  const el = $(`#${id}`);
+  el.addEventListener("click", () => {
+    const next = el.getAttribute("aria-checked") !== "true";
+    el.setAttribute("aria-checked", String(next));
+    onChange(next);
+  });
+}
+
+bindToggle("toggle-sfx", (v) => setSfxEnabled(v));
+
+bindToggle("toggle-music", (v) => {
+  settings.music = v;
+  saveSettings(settings);
+  // Clicking a toggle is itself a real user gesture, so it's safe to
+  // create/resume the AudioContext here even if nothing's played yet.
+  audioUnlocked = true;
+  sound.setMusicEnabled(v);
+});
+
+bindToggle("toggle-vibration", (v) => {
+  settings.vibration = v;
+  saveSettings(settings);
+  if (v) vibrate(20); // immediate confirmation that it's on
+});
+
+bindToggle("toggle-notifications", (v) => {
+  settings.notifications = v;
+  saveSettings(settings);
+  if (v) {
+    showToast("Notifications need the Android app — not available in the browser yet.");
+  }
+});
+
+$("#slider-sfx-volume").addEventListener("input", (e) => {
+  settings.sfxVolume = Number(e.target.value);
+  sound.setVolume(settings.sfxVolume / 100);
+});
+$("#slider-sfx-volume").addEventListener("change", () => saveSettings(settings));
+
+$("#slider-music-volume").addEventListener("input", (e) => {
+  settings.musicVolume = Number(e.target.value);
+  sound.setMusicVolume(settings.musicVolume / 100);
+});
+$("#slider-music-volume").addEventListener("change", () => saveSettings(settings));
+
+$("#btn-reset-settings").addEventListener("click", () => {
+  Object.assign(settings, DEFAULT_SETTINGS);
+  saveSettings(settings);
+  applySettingsToEngines();
+  refreshSettingsUI();
+  showToast("Settings reset.");
+});
+
+// Apply saved settings immediately (volumes/flags only — no audio
+// actually starts until unlockAudioOnce() fires on the first tap).
+applySettingsToEngines();
+
+boardView.onCircleClick = onCircleChosen;
+
+connectSocket();
