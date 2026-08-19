@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "8258393999",
+    "project_id": "black-hole-21",
+    "storage_bucket": "black-hole-21.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:8258393999:android:dc4a315bff675fa4d71dfa",
+        "android_client_info": {
+          "package_name": "com.blackhole21.game"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCPTh9vlJn11Z8VUiccI-SbjbP87JxocPA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
