@@ -4,17 +4,25 @@
   const BACKEND_URL = "https://black-hole-21.onrender.com/api/push/register";
   const log = (...args) => console.log("[push]", ...args);
   const error = (...args) => console.error("[push]", ...args);
+  let started = false;
 
   const register = async () => {
+    if (started) return;
+
     try {
+      if (!window.Capacitor?.isNativePlatform?.()) return;
+
       const nativePlugin =
         window.CapacitorPushNotifications?.PushNotifications ||
         window.Capacitor?.Plugins?.PushNotifications;
 
       if (!nativePlugin) {
-        error("PushNotifications plugin is not available in the native WebView");
+        error("PushNotifications plugin is not available yet; retrying...");
+        setTimeout(register, 500);
         return;
       }
+
+      started = true;
 
       await nativePlugin.addListener("registration", async (token) => {
         const fcmToken = token?.value;
@@ -23,6 +31,8 @@
           return;
         }
 
+        // Debugging only: this is an FCM device token, never a Firebase
+        // service-account private key or credential.
         log("FCM registration token:", fcmToken);
 
         try {
@@ -67,13 +77,13 @@
       await nativePlugin.register();
       log("PushNotifications.register() completed; waiting for registration event");
     } catch (e) {
+      started = false;
       error("native push setup failed:", e);
+      setTimeout(register, 2000);
     }
   };
 
-  // The native MainActivity injects this file only for Android builds.
-  // Keeping it out of www/index.html means the browser build is unchanged.
-  if (window.Capacitor?.isNativePlatform?.()) {
-    register();
-  }
+  // MainActivity injects this file only into the Android WebView. The
+  // browser version never executes this registration path.
+  register();
 })();
