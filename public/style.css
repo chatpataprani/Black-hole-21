@@ -703,3 +703,218 @@ html, body {
   .num-btn { background: rgba(18, 20, 44, 0.92); }
   .score-readout { background: rgba(14, 16, 36, 0.9); }
 }
+
+/* ============================================================
+   v2.0.0 additions: connection status, settings, about, offline
+   ============================================================ */
+
+/* Universal touch/text-selection hardening (mobile app feel) */
+html, body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+}
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* ---------- connection status (discreet, always present) ---------- */
+
+.connection-status {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  left: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  background: rgba(10, 11, 26, 0.55);
+  padding: 5px 10px 5px 8px;
+  border-radius: 999px;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+  transition: opacity 0.3s ease;
+}
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+.connection-status.connected .conn-dot { background: var(--ok); box-shadow: 0 0 6px rgba(85,224,168,0.6); }
+.connection-status.connected { opacity: 0; } /* fade away once healthy, stop competing for attention */
+.connection-status.connecting .conn-dot,
+.connection-status.reconnecting .conn-dot {
+  background: var(--amber);
+  animation: conn-pulse 1s ease-in-out infinite;
+}
+.connection-status.disconnected .conn-dot { background: var(--danger); }
+.connection-status.disconnected { opacity: 1; }
+@keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ---------- main menu tightening ---------- */
+.home-actions .btn { min-height: 50px; }
+
+/* ---------- settings screen ---------- */
+
+.settings-list { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 18px; }
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 2px;
+  border-bottom: 1px solid rgba(140, 150, 220, 0.1);
+  gap: 12px;
+}
+.setting-row-slider { flex-direction: column; align-items: stretch; gap: 8px; }
+.setting-label { font-size: 0.92rem; color: var(--text); }
+
+.toggle-switch {
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.08);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.2s cubic-bezier(.3,1,.4,1), background 0.2s ease;
+}
+.toggle-switch[aria-checked="true"] {
+  background: linear-gradient(135deg, var(--purple), var(--blue));
+  border-color: transparent;
+}
+.toggle-switch[aria-checked="true"] .toggle-knob {
+  transform: translateX(20px);
+  background: #fff;
+}
+
+.slider {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  outline: none;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--purple), var(--blue));
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+.slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--purple), var(--blue));
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+.settings-note {
+  font-size: 0.76rem;
+  color: var(--text-faint);
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+
+#btn-reset-settings { margin-top: 4px; }
+
+/* ---------- about screen ---------- */
+
+.about-hero { display: flex; flex-direction: column; align-items: center; margin-bottom: 14px; }
+.about-hole {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 10px;
+}
+.about-hole .mini-disk, .offline-hole .mini-disk {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--purple), var(--blue), var(--hot), var(--amber), var(--purple));
+  filter: blur(1px);
+  animation: spin 6s linear infinite;
+  box-shadow: 0 0 30px 6px rgba(111,92,255,0.4);
+}
+.about-hole .mini-core, .offline-hole .mini-core {
+  position: absolute; inset: 11px; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #14162b 0%, #000 70%);
+  box-shadow: inset 0 0 14px 4px #000;
+}
+.about-title { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.05em; margin: 0; }
+.about-version { color: var(--text-faint); font-size: 0.8rem; margin: 2px 0 0; }
+.about-desc { color: var(--text-dim); font-size: 0.88rem; line-height: 1.5; text-align: center; margin: 0 0 20px; }
+
+.dev-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  text-align: center;
+  margin-bottom: 18px;
+}
+.dev-card-label { font-size: 0.72rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 4px; }
+.dev-card-name { font-family: var(--font-display); font-weight: 700; margin: 0 0 14px; }
+.dev-links { display: flex; gap: 10px; justify-content: center; }
+.dev-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: transform 0.12s ease, border-color 0.15s ease;
+  min-height: 44px;
+}
+.dev-link:active { transform: scale(0.95); }
+.dev-link:hover { border-color: var(--purple); }
+.dev-link-icon { display: flex; }
+
+/* ---------- offline / connection lost screen ---------- */
+
+.screen-offline, #screen-offline { justify-content: center; text-align: center; gap: 10px; }
+.offline-hole { position: relative; width: 100px; height: 100px; margin-bottom: 8px; opacity: 0.75; }
+.offline-message { color: var(--text-dim); font-size: 0.95rem; margin: 4px 0 22px; }
+.offline-retry { max-width: 240px; }
+
+/* ---------- focus states (accessibility) ---------- */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.num-btn:focus-visible,
+.circle:focus-visible,
+.toggle-switch:focus-visible,
+.dev-link:focus-visible,
+.text-input:focus-visible,
+.slider:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}

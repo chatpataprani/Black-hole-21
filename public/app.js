@@ -47,13 +47,66 @@ function showScreen(id) {
 }
 
 // ============================================================
+// Connection status — discreet indicator + full-screen fallback if the
+// server stays unreachable for a while (e.g. a Render free-tier cold
+// start). Reuses the single existing socket; never opens a second one.
+// ============================================================
+
+let disconnectTimer = null;
+let screenBeforeOffline = null;
+
+function setConnectionStatus(state) {
+  const el = $("#connection-status");
+  if (!el) return;
+  el.classList.remove("connected", "connecting", "reconnecting", "disconnected");
+  el.classList.add(state);
+  const label = {
+    connected: "Connected",
+    connecting: "Connecting…",
+    reconnecting: "Reconnecting…",
+    disconnected: "Disconnected",
+  }[state];
+  const textEl = $("#conn-text");
+  if (textEl) textEl.textContent = label;
+
+  if (state === "connected") {
+    clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+    if ($("#screen-offline").classList.contains("active")) {
+      showScreen(screenBeforeOffline || "screen-home");
+      screenBeforeOffline = null;
+    }
+    return;
+  }
+
+  // Give Socket.IO's built-in auto-reconnect a real chance before
+  // interrupting the person with a full-screen "connection lost" state —
+  // a brief blip shouldn't nuke whatever they were doing.
+  if ((state === "disconnected" || state === "reconnecting") && !disconnectTimer) {
+    disconnectTimer = setTimeout(() => {
+      if (!$("#screen-offline").classList.contains("active")) {
+        const active = $(".screen.active");
+        screenBeforeOffline = active ? active.id : "screen-home";
+      }
+      showScreen("screen-offline");
+    }, 5000);
+  }
+}
+
+// ============================================================
 // Sound engine — procedural Web Audio, no external assets
 // ============================================================
 
 class SoundEngine {
   constructor() {
-    this.enabled = true;
+    this.enabled = true; // SFX on/off
+    this.musicEnabled = true;
+    this.volume = 0.8; // SFX master volume 0-1
+    this.musicVolume = 0.55;
     this.ctx = null;
+    this.masterGain = null; // all SFX route through here
+    this.musicGain = null; // background drone routes through here
+    this.musicNodes = null; // active music oscillators, or null if stopped
   }
 
   ensureCtx() {
@@ -61,6 +114,12 @@ class SoundEngine {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return null;
       this.ctx = new AC();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.volume;
+      this.masterGain.connect(this.ctx.destination);
+      this.musicGain = this.ctx.createGain();
+      this.musicGain.gain.value = this.musicVolume * 0.35; // ambient bed, stays subtle
+      this.musicGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === "suspended") this.ctx.resume();
     return this.ctx;
@@ -68,6 +127,61 @@ class SoundEngine {
 
   setEnabled(v) {
     this.enabled = v;
+  }
+
+  setVolume(v01) {
+    this.volume = clamp(v01, 0, 1);
+    if (this.masterGain) this.masterGain.gain.value = this.volume;
+  }
+
+  setMusicVolume(v01) {
+    this.musicVolume = clamp(v01, 0, 1);
+    if (this.musicGain) this.musicGain.gain.value = this.musicVolume * 0.35;
+  }
+
+  setMusicEnabled(v) {
+    this.musicEnabled = v;
+    if (v) this.startMusic();
+    else this.stopMusic();
+  }
+
+  // Slow, quiet two-tone drone with a gentle LFO drift — deliberately
+  // minimal (a handful of long-lived nodes, not a sample loop) so it
+  // costs almost nothing on a phone CPU.
+  startMusic() {
+    if (!this.musicEnabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx || this.musicNodes) return;
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.type = "sine";
+    osc1.frequency.value = 55;
+    osc2.type = "sine";
+    osc2.frequency.value = 55 * 1.5;
+    const lfo = ctx.createOscillator();
+    const lfoGain = ctx.createGain();
+    lfo.frequency.value = 0.06;
+    lfoGain.gain.value = 5;
+    lfo.connect(lfoGain).connect(osc2.frequency);
+    osc1.connect(this.musicGain);
+    osc2.connect(this.musicGain);
+    osc1.start();
+    osc2.start();
+    lfo.start();
+    this.musicNodes = { osc1, osc2, lfo };
+  }
+
+  stopMusic() {
+    if (!this.musicNodes) return;
+    const { osc1, osc2, lfo } = this.musicNodes;
+    try {
+      osc1.stop();
+      osc2.stop();
+      lfo.stop();
+    } catch (e) {
+      /* already stopped */
+    }
+    this.musicNodes = null;
   }
 
   // Soft click for UI interactions
@@ -81,7 +195,7 @@ class SoundEngine {
     o.frequency.value = 520;
     g.gain.setValueAtTime(0.05, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-    o.connect(g).connect(ctx.destination);
+    o.connect(g).connect(this.masterGain);
     o.start();
     o.stop(ctx.currentTime + 0.09);
   }
@@ -102,7 +216,7 @@ class SoundEngine {
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
     filter.frequency.value = 300;
-    osc.connect(filter).connect(gain).connect(ctx.destination);
+    osc.connect(filter).connect(gain).connect(this.masterGain);
     osc.start();
     osc.stop(ctx.currentTime + durationSec + 0.1);
   }
@@ -128,7 +242,7 @@ class SoundEngine {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.16, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-    noise.connect(filter).connect(gain).connect(ctx.destination);
+    noise.connect(filter).connect(gain).connect(this.masterGain);
     noise.start();
 
     // impact bass pulse
@@ -139,7 +253,7 @@ class SoundEngine {
     o.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.2);
     g.gain.setValueAtTime(0.12, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
-    o.connect(g).connect(ctx.destination);
+    o.connect(g).connect(this.masterGain);
     o.start();
     o.stop(ctx.currentTime + 0.25);
   }
@@ -156,7 +270,7 @@ class SoundEngine {
     o.frequency.linearRampToValueAtTime(18, ctx.currentTime + 0.5);
     g.gain.setValueAtTime(0.2, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-    o.connect(g).connect(ctx.destination);
+    o.connect(g).connect(this.masterGain);
     o.start();
     o.stop(ctx.currentTime + 0.65);
 
@@ -169,7 +283,7 @@ class SoundEngine {
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.2, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-    noise.connect(gain).connect(ctx.destination);
+    noise.connect(gain).connect(this.masterGain);
     noise.start();
   }
 
@@ -187,14 +301,201 @@ class SoundEngine {
       g.gain.setValueAtTime(0.0001, start);
       g.gain.linearRampToValueAtTime(0.09, start + 0.02);
       g.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
-      o.connect(g).connect(ctx.destination);
+      o.connect(g).connect(this.masterGain);
       o.start(start);
       o.stop(start + 0.55);
     });
   }
+
+  // Short two-tone blip, higher/brighter than click() — used for number
+  // selection specifically so it reads differently from a plain button tap.
+  select() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [700, 900].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.045;
+      g.gain.setValueAtTime(0.06, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.07);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.08);
+    });
+  }
+
+  // Solid "thunk" when a number actually lands on the board.
+  place() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(220, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(140, ctx.currentTime + 0.12);
+    g.gain.setValueAtTime(0.1, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.14);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.15);
+  }
+
+  // Soft rising tick for a turn handoff — deliberately unobtrusive.
+  turnChange() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(440, ctx.currentTime);
+    o.frequency.linearRampToValueAtTime(560, ctx.currentTime + 0.1);
+    g.gain.setValueAtTime(0.045, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    o.connect(g).connect(this.masterGain);
+    o.start();
+    o.stop(ctx.currentTime + 0.13);
+  }
+
+  // A friend arriving / leaving the room.
+  join() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [500, 700, 900].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.06;
+      g.gain.setValueAtTime(0.07, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.16);
+    });
+  }
+
+  leave() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [700, 500].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.07;
+      g.gain.setValueAtTime(0.06, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.15);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.16);
+    });
+  }
+
+  gameStart() {
+    if (!this.enabled) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    [392, 523.25, 659.25].forEach((freq, i) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "triangle";
+      o.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.08;
+      g.gain.setValueAtTime(0.08, start);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+      o.connect(g).connect(this.masterGain);
+      o.start(start);
+      o.stop(start + 0.32);
+    });
+  }
+
+  rematch() {
+    this.click();
+  }
 }
 
 const sound = new SoundEngine();
+
+// ============================================================
+// Settings — persisted in localStorage (survives reload / app close,
+// unlike the per-tab session storage used for room reconnection).
+// ============================================================
+
+const SETTINGS_KEY = "bh21_settings";
+const DEFAULT_SETTINGS = {
+  sfx: true,
+  music: true,
+  sfxVolume: 80,
+  musicVolume: 55,
+  vibration: true,
+  notifications: false,
+};
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_SETTINGS, ...parsed };
+  } catch (e) {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(s) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch (e) {
+    /* storage unavailable — settings just won't persist */
+  }
+}
+
+const settings = loadSettings();
+
+function applySettingsToEngines() {
+  // Store the flags directly rather than going through setMusicEnabled(),
+  // which would call ensureCtx() and try to start audio immediately —
+  // that has to wait for a real user gesture (see unlockAudioOnce below).
+  sound.setEnabled(settings.sfx);
+  sound.volume = settings.sfxVolume / 100;
+  sound.musicEnabled = settings.music;
+  sound.musicVolume = settings.musicVolume / 100;
+  if (sound.masterGain) sound.masterGain.gain.value = sound.volume;
+  if (sound.musicGain) sound.musicGain.gain.value = sound.musicVolume * 0.35;
+  $$(".sound-toggle").forEach((b) => b.setAttribute("aria-pressed", String(settings.sfx)));
+}
+
+// Web Audio can't play anything before a real user gesture. Unlock and
+// (if enabled) start the ambient bed on the first tap anywhere, then
+// never again — this is the only place audio starts itself.
+let audioUnlocked = false;
+function unlockAudioOnce() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  sound.ensureCtx();
+  if (settings.music) sound.startMusic();
+}
+document.addEventListener("pointerdown", unlockAudioOnce, { once: true });
+
+// Haptic feedback — respects the Vibration setting, silently does
+// nothing where unsupported (iOS Safari, desktop, etc.). Never required
+// for anything to function.
+function vibrate(pattern) {
+  if (!settings.vibration) return;
+  if (typeof navigator === "undefined" || !navigator.vibrate) return;
+  try {
+    navigator.vibrate(pattern);
+  } catch (e) {
+    /* ignore */
+  }
+}
 
 // ============================================================
 // Ambient starfield background (always running, subtle)
@@ -670,6 +971,7 @@ class BlackHoleCinematic {
             flying.remove();
             this.pulses.push({ r: 4, alpha: 1 });
             sound.suction();
+            vibrate(12);
             resolve();
           }
         };
@@ -1046,6 +1348,7 @@ function connectSocket() {
 
   socket.on("player_joined", ({ game }) => {
     updateGameState(game);
+    if (game.status === "playing") sound.join();
     if (game.status === "playing" && appState.roomCode) {
       // Host transitions from waiting room into the game.
       if ($("#screen-create").classList.contains("active") || $("#screen-join").classList.contains("active")) {
@@ -1056,6 +1359,8 @@ function connectSocket() {
 
   socket.on("game_started", ({ game }) => {
     updateGameState(game);
+    sound.gameStart();
+    vibrate(25);
   });
 
   socket.on("move_made", ({ game }) => {
@@ -1076,6 +1381,7 @@ function connectSocket() {
 
   socket.on("player_disconnected", ({ game, player }) => {
     updateGameState(game);
+    sound.leave();
     const name = appState.names[player] || "Opponent";
     const status = $("#opponent-status");
     status.textContent = `${name} disconnected — waiting for reconnection…`;
@@ -1084,6 +1390,7 @@ function connectSocket() {
 
   socket.on("player_reconnected", ({ game }) => {
     updateGameState(game);
+    sound.join();
     $("#opponent-status").classList.add("hidden");
   });
 
@@ -1093,6 +1400,19 @@ function connectSocket() {
     resetBoardVisuals();
     showScreen("screen-game");
   });
+
+  // ---- connection status (discreet indicator, auto-reconnect handled
+  // by Socket.IO itself — we only reflect state, never open a 2nd socket) ----
+  setConnectionStatus("connecting");
+
+  socket.on("connect", () => setConnectionStatus("connected"));
+  socket.on("disconnect", () => setConnectionStatus("disconnected"));
+
+  // socket.io (the Manager) fires these on its own — NOT on `socket`
+  // itself — during automatic reconnection attempts.
+  socket.io.on("reconnect_attempt", () => setConnectionStatus("reconnecting"));
+  socket.io.on("reconnect", () => setConnectionStatus("connected"));
+  socket.io.on("reconnect_failed", () => setConnectionStatus("disconnected"));
 }
 
 // ---------- session persistence (survive a refresh, NOT shared across tabs) ----------
@@ -1165,6 +1485,13 @@ function updateGameState(game, opts = {}) {
       turnEl.classList.remove("turn-flash");
       void turnEl.offsetWidth; // restart the animation
       turnEl.classList.add("turn-flash");
+      // Only cue sound/haptics once we've already shown a turn before
+      // (skip the very first render) and only when it becomes YOUR turn,
+      // so it doesn't buzz every broadcast.
+      if (appState.lastTurnText !== null && myTurn) {
+        sound.turnChange();
+        vibrate(20);
+      }
       appState.lastTurnText = newText;
     }
     turnEl.textContent = newText;
@@ -1235,7 +1562,8 @@ function onCircleChosen(position) {
   if (game.board[position] !== null) return;
   appState.selectedPosition = position;
   boardView.select(position);
-  sound.click();
+  sound.select();
+  vibrate(10);
   $("#selector-hint").textContent = "Pick a number 1–10";
   renderNumberSelector();
 }
@@ -1244,7 +1572,8 @@ function onNumberChosen(number) {
   const game = appState.game;
   if (!game || appState.selectedPosition === null) return;
   if (game.currentTurn !== appState.you) return;
-  sound.click();
+  sound.place();
+  vibrate(15);
 
   const position = appState.selectedPosition;
   $$(".num-btn").forEach((b) => b.disabled = true);
@@ -1307,6 +1636,7 @@ async function runBlackHoleSequence(game) {
   boardView.onCircleClick = null;
   $("#selector-wrap").classList.add("hidden");
   blackHoleCinematic.currentHolePosition = game.blackHolePosition;
+  vibrate([30, 60, 30]);
 
   const { neighbors, scores } = game.blackHoleResult;
   await blackHoleCinematic.start(game.blackHolePosition, neighbors, scores);
@@ -1375,6 +1705,7 @@ function revealWinner(game) {
   animateCountUp($("#wscore-player1"), 0, scores.player1, "");
   animateCountUp($("#wscore-player2"), 0, scores.player2, "");
   sound.chime(iWon);
+  vibrate(isDraw ? [40, 40, 40] : iWon ? [30, 40, 30, 40, 60] : [80]);
   if (iWon) winnerParticles.burst();
 }
 
@@ -1384,6 +1715,20 @@ function revealWinner(game) {
 
 $$("[data-back-to]").forEach((btn) => {
   btn.addEventListener("click", () => showScreen(btn.dataset.backTo));
+});
+
+$("#btn-goto-play").addEventListener("click", () => {
+  sound.click();
+  showScreen("screen-play");
+});
+$("#btn-goto-settings").addEventListener("click", () => {
+  sound.click();
+  refreshSettingsUI();
+  showScreen("screen-settings");
+});
+$("#btn-goto-about").addEventListener("click", () => {
+  sound.click();
+  showScreen("screen-about");
 });
 
 $("#btn-goto-create").addEventListener("click", () => {
@@ -1463,14 +1808,7 @@ $("#btn-home").addEventListener("click", () => {
 });
 
 function bindSoundToggle(btn) {
-  btn.addEventListener("click", () => {
-    const enabled = btn.getAttribute("aria-pressed") !== "false";
-    const next = !enabled;
-    btn.setAttribute("aria-pressed", String(next));
-    $$(".sound-toggle").forEach((b) => b.setAttribute("aria-pressed", String(next)));
-    sound.setEnabled(next);
-    if (next) sound.ensureCtx();
-  });
+  btn.addEventListener("click", () => setSfxEnabled(!settings.sfx));
 }
 bindSoundToggle($("#btn-sound-toggle"));
 bindSoundToggle($("#btn-sound-toggle-game"));
@@ -1479,6 +1817,93 @@ bindSoundToggle($("#btn-sound-toggle-game"));
 $("#join-code").addEventListener("input", (e) => {
   e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 5);
 });
+
+$("#btn-retry-connection").addEventListener("click", () => {
+  sound.click();
+  setConnectionStatus("connecting");
+  appState.socket.connect(); // reconnects the SAME socket — never opens a second one
+});
+
+// ============================================================
+// Settings screen wiring
+// ============================================================
+
+function setSfxEnabled(v) {
+  settings.sfx = v;
+  sound.setEnabled(v);
+  saveSettings(settings);
+  $$(".sound-toggle").forEach((b) => b.setAttribute("aria-pressed", String(v)));
+  const sw = $("#toggle-sfx");
+  if (sw) sw.setAttribute("aria-checked", String(v));
+  if (v) sound.ensureCtx();
+}
+
+function refreshSettingsUI() {
+  $("#toggle-sfx").setAttribute("aria-checked", String(settings.sfx));
+  $("#toggle-music").setAttribute("aria-checked", String(settings.music));
+  $("#toggle-vibration").setAttribute("aria-checked", String(settings.vibration));
+  $("#toggle-notifications").setAttribute("aria-checked", String(settings.notifications));
+  $("#slider-sfx-volume").value = settings.sfxVolume;
+  $("#slider-music-volume").value = settings.musicVolume;
+}
+
+function bindToggle(id, onChange) {
+  const el = $(`#${id}`);
+  el.addEventListener("click", () => {
+    const next = el.getAttribute("aria-checked") !== "true";
+    el.setAttribute("aria-checked", String(next));
+    onChange(next);
+  });
+}
+
+bindToggle("toggle-sfx", (v) => setSfxEnabled(v));
+
+bindToggle("toggle-music", (v) => {
+  settings.music = v;
+  saveSettings(settings);
+  // Clicking a toggle is itself a real user gesture, so it's safe to
+  // create/resume the AudioContext here even if nothing's played yet.
+  audioUnlocked = true;
+  sound.setMusicEnabled(v);
+});
+
+bindToggle("toggle-vibration", (v) => {
+  settings.vibration = v;
+  saveSettings(settings);
+  if (v) vibrate(20); // immediate confirmation that it's on
+});
+
+bindToggle("toggle-notifications", (v) => {
+  settings.notifications = v;
+  saveSettings(settings);
+  if (v) {
+    showToast("Notifications need the Android app — not available in the browser yet.");
+  }
+});
+
+$("#slider-sfx-volume").addEventListener("input", (e) => {
+  settings.sfxVolume = Number(e.target.value);
+  sound.setVolume(settings.sfxVolume / 100);
+});
+$("#slider-sfx-volume").addEventListener("change", () => saveSettings(settings));
+
+$("#slider-music-volume").addEventListener("input", (e) => {
+  settings.musicVolume = Number(e.target.value);
+  sound.setMusicVolume(settings.musicVolume / 100);
+});
+$("#slider-music-volume").addEventListener("change", () => saveSettings(settings));
+
+$("#btn-reset-settings").addEventListener("click", () => {
+  Object.assign(settings, DEFAULT_SETTINGS);
+  saveSettings(settings);
+  applySettingsToEngines();
+  refreshSettingsUI();
+  showToast("Settings reset.");
+});
+
+// Apply saved settings immediately (volumes/flags only — no audio
+// actually starts until unlockAudioOnce() fires on the first tap).
+applySettingsToEngines();
 
 boardView.onCircleClick = onCircleChosen;
 

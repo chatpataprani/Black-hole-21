@@ -15,6 +15,7 @@ const { Server } = require("socket.io");
 const rules = require("./game/gameRules");
 const gameManager = require("./game/gameManager");
 const { RoomManager } = require("./game/roomManager");
+const adminRoutes = require("./server/adminRoutes");
 
 const PORT = process.env.PORT || 3000;
 const RECONNECT_TIMEOUT_MS = Number(process.env.RECONNECT_TIMEOUT_MS) || 120000;
@@ -25,6 +26,12 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, "public")));
+
+// Admin broadcast + push-token registration API. Every route in here is
+// either public-but-narrow (register/unregister a device token) or
+// gated behind ADMIN_TOKEN — see server/adminRoutes.js. Mounting this
+// doesn't change anything about the existing game routes/sockets below.
+app.use("/api", adminRoutes);
 
 const roomManager = new RoomManager({ roomTtlMs: ROOM_TTL_MS });
 

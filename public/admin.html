@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Black Hole 21 — Admin</title>
+<style>
+  :root {
+    --void: #050510; --navy: #0b0f24; --glass: rgba(18,20,44,0.6);
+    --border: rgba(140,150,220,0.18); --purple: #6f5cff; --blue: #3ea8ff;
+    --text: #eef0ff; --text-dim: #9aa0c7; --ok: #55e0a8; --danger: #ff5c7a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% -10%, #131a3d 0%, var(--navy) 45%, var(--void) 100%);
+    font-family: 'Segoe UI', sans-serif; color: var(--text); padding: 24px;
+  }
+  .panel {
+    width: 100%; max-width: 420px; background: var(--glass); border: 1px solid var(--border);
+    border-radius: 20px; padding: 28px 24px; backdrop-filter: blur(14px);
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; letter-spacing: 0.02em; }
+  .sub { color: var(--text-dim); font-size: 0.82rem; margin: 0 0 22px; }
+  label { display: block; font-size: 0.78rem; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.06em; margin: 14px 0 6px; }
+  input, textarea {
+    width: 100%; background: rgba(5,6,20,0.6); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; color: var(--text); font-size: 0.95rem; font-family: inherit; outline: none;
+  }
+  textarea { resize: vertical; min-height: 80px; }
+  button {
+    width: 100%; margin-top: 18px; padding: 14px; border: none; border-radius: 12px;
+    background: linear-gradient(135deg, var(--purple), var(--blue)); color: #fff; font-weight: 700;
+    font-size: 0.95rem; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+  .recipients { font-size: 0.82rem; color: var(--text-dim); margin-top: 4px; }
+  .status { margin-top: 14px; font-size: 0.85rem; min-height: 1.4em; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--danger); }
+  .hidden { display: none !important; }
+  .char-count { font-size: 0.72rem; color: var(--text-dim); text-align: right; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+  <div class="panel">
+    <h1>BLACK HOLE 21 ADMIN</h1>
+    <p class="sub">Broadcast notifications to subscribed players.</p>
+
+    <!-- Token gate: nothing below is trusted client-side; every request
+         re-sends this token and the server verifies it. This screen just
+         avoids showing the form to someone who clearly has no token. -->
+    <div id="gate">
+      <label for="admin-token">Admin token</label>
+      <input type="password" id="admin-token" autocomplete="off" placeholder="Paste your ADMIN_TOKEN" />
+      <button id="btn-unlock">Unlock</button>
+      <p class="status" id="gate-status"></p>
+    </div>
+
+    <div id="broadcast-form" class="hidden">
+      <p class="recipients" id="recipient-count">— subscribed players</p>
+
+      <label for="bc-title">Title</label>
+      <input type="text" id="bc-title" maxlength="60" placeholder="New Black Hole 21 Update!" />
+
+      <label for="bc-message">Message</label>
+      <textarea id="bc-message" maxlength="200" placeholder="Black Hole 21 v2 is now live!"></textarea>
+      <p class="char-count"><span id="char-count">0</span>/200</p>
+
+      <button id="btn-send">Send to everyone</button>
+      <button id="btn-lock" class="secondary" style="margin-top:8px;">Lock</button>
+      <p class="status" id="send-status"></p>
+    </div>
+  </div>
+
+<script>
+  let adminToken = "";
+
+  const gate = document.getElementById("gate");
+  const form = document.getElementById("broadcast-form");
+  const gateStatus = document.getElementById("gate-status");
+  const sendStatus = document.getElementById("send-status");
+  const recipientCount = document.getElementById("recipient-count");
+  const charCount = document.getElementById("char-count");
+
+  document.getElementById("bc-message").addEventListener("input", (e) => {
+    charCount.textContent = e.target.value.length;
+  });
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      ...opts,
+      headers: {
+        ...(opts.headers || {}),
+        Authorization: "Bearer " + adminToken,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+    return data;
+  }
+
+  document.getElementById("btn-unlock").addEventListener("click", async () => {
+    adminToken = document.getElementById("admin-token").value.trim();
+    if (!adminToken) return;
+    gateStatus.textContent = "Checking…";
+    gateStatus.className = "status";
+    try {
+      const stats = await api("/api/admin/stats");
+      gate.classList.add("hidden");
+      form.classList.remove("hidden");
+      recipientCount.textContent = `${stats.subscriberCount} subscribed player${stats.subscriberCount === 1 ? "" : "s"}`
+        + (stats.firebaseConfigured ? "" : "  ·  Firebase not configured yet");
+    } catch (err) {
+      gateStatus.textContent = err.message;
+      gateStatus.className = "status err";
+    }
+  });
+
+  document.getElementById("btn-lock").addEventListener("click", () => {
+    adminToken = "";
+    document.getElementById("admin-token").value = "";
+    form.classList.add("hidden");
+    gate.classList.remove("hidden");
+    gateStatus.textContent = "";
+    sendStatus.textContent = "";
+  });
+
+  document.getElementById("btn-send").addEventListener("click", async () => {
+    const title = document.getElementById("bc-title").value.trim();
+    const message = document.getElementById("bc-message").value.trim();
+    const btn = document.getElementById("btn-send");
+
+    if (!title || !message) {
+      sendStatus.textContent = "Title and message are both required.";
+      sendStatus.className = "status err";
+      return;
+    }
+
+    btn.disabled = true;
+    sendStatus.textContent = "Sending…";
+    sendStatus.className = "status";
+    try {
+      const result = await api("/api/admin/broadcast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, message }),
+      });
+      sendStatus.textContent = `✓ Notification sent successfully (${result.successCount} delivered, ${result.failureCount} failed)`;
+      sendStatus.className = "status ok";
+    } catch (err) {
+      sendStatus.textContent = err.message;
+      sendStatus.className = "status err";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
