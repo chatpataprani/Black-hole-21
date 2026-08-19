@@ -27,4 +27,16 @@ firebase.initializeApp({
   measurementId: "G-E8NGTPHHEZ"
 });
 
-firebase.messaging();
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage((payload) => {
+  const notification = payload.notification || {};
+  self.registration.showNotification(notification.title || "Black Hole 21", {
+    body: notification.body || "You have a new message.",
+    icon: "/favicon.ico",
+    badge: "/favicon.ico",
+    tag: "black-hole-21-broadcast",
+    renotify: true,
+    data: payload.data || {}
+  });
+});

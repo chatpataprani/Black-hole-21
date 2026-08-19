@@ -107,7 +107,7 @@
             <span class="setting-label">🔔 Notifications</span>
             <button class="toggle-switch" id="toggle-notifications" role="switch" aria-checked="false"><span class="toggle-knob"></span></button>
           </div>
-          <p class="settings-note">Notifications require the Android app and a one-time permission prompt. Not available in the browser yet.</p>
+          <p class="settings-note">Enable push notifications on this device. Android uses native FCM; browsers use Firebase Web Push.</p>
         </div>
 
         <button id="btn-reset-settings" class="btn btn-ghost">Reset settings</button>
@@ -287,6 +287,53 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.1.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/12.1.0/firebase-messaging-compat.js"></script>
+  <script src="web-push.js"></script>
   <script src="app.js"></script>
+  <script>
+  (() => {
+    const oldToggle = document.getElementById("toggle-notifications");
+    if (!oldToggle) return;
+    const toggle = oldToggle.cloneNode(true);
+    oldToggle.replaceWith(toggle);
+    const note = document.querySelector(".settings-note");
+    const setState = (enabled) => {
+      toggle.setAttribute("aria-checked", String(enabled));
+      if (note) note.textContent = enabled ? "Push notifications are enabled for this browser." : "Enable push notifications to receive admin broadcasts on this browser.";
+    };
+    const saved = localStorage.getItem("bh21_web_push_enabled") === "1";
+    setState(saved);
+    toggle.addEventListener("click", async () => {
+      const next = toggle.getAttribute("aria-checked") !== "true";
+      if (next) {
+        toggle.disabled = true;
+        try {
+          const result = await window.blackHoleWebPush.enable();
+          setState(true);
+          if (typeof showToast === "function") showToast("Notifications enabled.");
+          console.log("[web-push] browser registered; subscribers=", result.subscriberCount);
+        } catch (error) {
+          setState(false);
+          if (typeof showToast === "function") showToast("Notifications failed: " + error.message);
+          console.error("[web-push] enable failed", error);
+        } finally {
+          toggle.disabled = false;
+        }
+      } else {
+        toggle.disabled = true;
+        try {
+          await window.blackHoleWebPush.disable();
+          setState(false);
+          if (typeof showToast === "function") showToast("Notifications disabled.");
+        } catch (error) {
+          console.error("[web-push] disable failed", error);
+        } finally {
+          toggle.disabled = false;
+        }
+      }
+    });
+  })();
+  </script>
 </body>
 </html>
