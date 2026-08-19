@@ -50,7 +50,7 @@ async function registerPush(){
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("Notification permission is " + permission + ". Allow notifications in the browser settings and try again.");
 
-    firebase.initializeApp(FIREBASE_CONFIG);
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     const messaging = firebase.messaging();
     status("Requesting FCM registration token…");
     const token = await messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: registration });
@@ -65,7 +65,7 @@ async function registerPush(){
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error("Backend registration failed: HTTP " + response.status + " " + JSON.stringify(result));
 
-    status("Notifications enabled and token registered.\nSubscribers: " + (result.count ?? "unknown") + "\n\nToken:\n" + token);
+    status("Notifications enabled and token registered.\nSubscribers: " + (result.subscriberCount ?? "unknown") + "\n\nToken:\n" + token);
     button.textContent = "Notifications enabled";
     button.disabled = true;
 
