@@ -4,48 +4,39 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends BridgeActivity {
-    private static final String PUSH_PLUGIN_URL =
-            "https://cdn.jsdelivr.net/npm/@capacitor/push-notifications@8.1.2/dist/plugin.js";
     private final Handler pushHandler = new Handler();
-    private int pushInjectionAttempts = 0;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        schedulePushInjection();
+        // The Push Notifications Capacitor plugin is installed natively by
+        // `npx cap sync android`. Only inject our small app-side registration
+        // script; never download executable plugin code at runtime.
+        pushHandler.postDelayed(this::injectPushRegistrationScript, 1000);
     }
 
-    private void schedulePushInjection() {
-        pushHandler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                WebView webView = getBridge().getWebView();
-                String script =
-                        "(function(){" +
-                        "if(window.__bh21PushInjected)return 'done';" +
-                        "if(!window.Capacitor)return 'waiting';" +
-                        "window.__bh21PushInjected=true;" +
-                        "var s=document.createElement('script');" +
-                        "s.src='" + PUSH_PLUGIN_URL + "';" +
-                        "s.onload=function(){" +
-                        "var p=document.createElement('script');" +
-                        "p.src='push-notifications.js';" +
-                        "document.head.appendChild(p);" +
-                        "};" +
-                        "s.onerror=function(e){console.error('[push] failed to load Capacitor PushNotifications plugin',e);};" +
-                        "document.head.appendChild(s);" +
-                        "return 'injected';" +
-                        "})();";
-
-                webView.evaluateJavascript(script, result -> {
-                    if ("\"waiting\"".equals(result) && pushInjectionAttempts++ < 60) {
-                        schedulePushInjection();
-                    }
-                });
+    private void injectPushRegistrationScript() {
+        WebView webView = getBridge().getWebView();
+        try (InputStream input = getAssets().open("public/push-notifications.js");
+             BufferedReader reader = new BufferedReader(
+                     new InputStreamReader(input, StandardCharsets.UTF_8))) {
+            StringBuilder script = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                script.append(line).append('\n');
             }
-        }, 500);
+            webView.evaluateJavascript(script.toString(), result -> {
+                // The JS file emits all useful diagnostics through [push] logs.
+            });
+        } catch (Exception e) {
+            android.util.Log.e("BlackHole21", "[push] failed to load local registration script", e);
+        }
     }
 
     @Override
