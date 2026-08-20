@@ -38,9 +38,11 @@ public class MainActivity extends BridgeActivity {
     private static final String PREFS = "black_hole_21";
     private static final String PREF_NOTIFICATION_PROMPT = "notification_prompt_shown";
     private static final String PREF_LAST_SEEN_VERSION = "last_seen_version_code";
+    private static final String PREF_LAST_PROMPTED_UPDATE = "last_prompted_update_version";
     private static final String UPDATE_MANIFEST_URL = "https://black-hole-21.onrender.com/app-update.json";
     private static final Pattern JSON_STRING = Pattern.compile("\\\"%s\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
     private static final Pattern JSON_NUMBER = Pattern.compile("\\\"%s\\\"\\s*:\\s*(\\d+)");
+    private boolean updateDialogShowing = false;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -172,7 +174,7 @@ public class MainActivity extends BridgeActivity {
                 connection = (HttpURLConnection) new URL(UPDATE_MANIFEST_URL + "?t=" + System.currentTimeMillis()).openConnection();
                 connection.setConnectTimeout(5000);
                 connection.setReadTimeout(5000);
-                connection.setRequestProperty("Cache-Control", "no-cache");
+                connection.setRequestProperty("Cache-Control", "no-cache, no-store");
                 int status = connection.getResponseCode();
                 if (status < 200 || status >= 300) return;
                 String json = readStream(connection.getInputStream());
@@ -180,7 +182,14 @@ public class MainActivity extends BridgeActivity {
                 String versionName = getJsonString(json, "versionName");
                 String apkUrl = getJsonString(json, "apkUrl");
                 String notes = getJsonString(json, "notes");
-                if (latestVersionCode <= getCurrentVersionCode() || apkUrl == null || apkUrl.isEmpty()) return;
+                int currentVersion = getCurrentVersionCode();
+
+                if (latestVersionCode <= currentVersion || apkUrl == null || apkUrl.isEmpty()) return;
+
+                SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+                int lastPrompted = prefs.getInt(PREF_LAST_PROMPTED_UPDATE, -1);
+                if (lastPrompted == latestVersionCode) return;
+                prefs.edit().putInt(PREF_LAST_PROMPTED_UPDATE, latestVersionCode).apply();
 
                 runOnUiThread(() -> showUpdateDialog(latestVersionCode, versionName, apkUrl, notes));
             } catch (Exception e) {
@@ -192,16 +201,23 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void showUpdateDialog(int versionCode, String versionName, String apkUrl, String notes) {
-        if (isFinishing()) return;
-        String message = "A new version of Black Hole 21 is available.";
-        if (versionName != null && !versionName.isEmpty()) message += "\\n\\nVersion " + versionName + ".";
-        if (notes != null && !notes.isEmpty()) message += "\\n\\n" + notes;
+        if (isFinishing() || updateDialogShowing) return;
+        updateDialogShowing = true;
+
+        String message = "A NEW UPDATE IS AVAILABLE FOR BLACK HOLE 21.\n\n"
+                + "Current version: " + getCurrentVersionCode() + "\n"
+                + "New version: " + (versionName == null || versionName.isEmpty() ? versionCode : versionName) + "\n\n"
+                + (notes == null || notes.isEmpty() ? "Install the latest version to get the newest fixes and features." : notes);
 
         new AlertDialog.Builder(this)
-                .setTitle("Update available")
+                .setTitle("🚀 UPDATE AVAILABLE")
                 .setMessage(message)
-                .setNegativeButton("Later", null)
-                .setPositiveButton("Update now", (dialog, which) -> downloadUpdate(apkUrl, versionCode))
+                .setNegativeButton("Later", (dialog, which) -> updateDialogShowing = false)
+                .setPositiveButton("UPDATE NOW", (dialog, which) -> {
+                    updateDialogShowing = false;
+                    downloadUpdate(apkUrl, versionCode);
+                })
+                .setOnCancelListener(dialog -> updateDialogShowing = false)
                 .show();
     }
 
@@ -211,18 +227,18 @@ public class MainActivity extends BridgeActivity {
             if (manager == null) throw new IllegalStateException("Download service unavailable");
 
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(apkUrl));
-            request.setTitle("Black Hole 21 update");
-            request.setDescription("Downloading the latest game update");
+            request.setTitle("Black Hole 21 — UPDATE AVAILABLE");
+            request.setDescription("Downloading Black Hole 21 v" + versionCode + " update");
             request.setMimeType("application/vnd.android.package-archive");
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "Black-Hole-21-update-" + versionCode + ".apk");
 
             long id = manager.enqueue(request);
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putLong("update_download_id", id).apply();
-            android.widget.Toast.makeText(this, "Downloading update…", android.widget.Toast.LENGTH_LONG).show();
+            android.widget.Toast.makeText(this, "UPDATE DOWNLOADING…", android.widget.Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             Log.e(TAG, "[update] download failed", e);
-            android.widget.Toast.makeText(this, "Update download failed. Try again later.", android.widget.Toast.LENGTH_LONG).show();
+            android.widget.Toast.makeText(this, "UPDATE DOWNLOAD FAILED. TRY AGAIN.", android.widget.Toast.LENGTH_LONG).show();
         }
     }
 
