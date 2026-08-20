@@ -37,6 +37,7 @@ public class MainActivity extends BridgeActivity {
     private static final String CHANNEL_ID = "black_hole_21_notifications";
     private static final String PREFS = "black_hole_21";
     private static final String PREF_NOTIFICATION_PROMPT = "notification_prompt_shown";
+    private static final String PREF_LAST_SEEN_VERSION = "last_seen_version_code";
     private static final String UPDATE_MANIFEST_URL = "https://black-hole-21.onrender.com/app-update.json";
     private static final Pattern JSON_STRING = Pattern.compile("\\\"%s\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
     private static final Pattern JSON_NUMBER = Pattern.compile("\\\"%s\\\"\\s*:\\s*(\\d+)");
@@ -47,6 +48,7 @@ public class MainActivity extends BridgeActivity {
         createNotificationChannel();
         setupPushNotifications();
         checkForAppUpdate();
+        showPostUpdateMessageIfNeeded();
     }
 
     @Override
@@ -63,9 +65,6 @@ public class MainActivity extends BridgeActivity {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         boolean promptShown = prefs.getBoolean(PREF_NOTIFICATION_PROMPT, false);
 
-        // Android 10/11 do not have a runtime notification permission. We still
-        // show our own one-time explanation so a fresh APK install explicitly
-        // asks the player to enable notifications.
         if (!promptShown) {
             showNotificationEnablePrompt();
             return;
@@ -225,6 +224,25 @@ public class MainActivity extends BridgeActivity {
             Log.e(TAG, "[update] download failed", e);
             android.widget.Toast.makeText(this, "Update download failed. Try again later.", android.widget.Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void showPostUpdateMessageIfNeeded() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        int currentVersion = getCurrentVersionCode();
+        int lastSeenVersion = prefs.getInt(PREF_LAST_SEEN_VERSION, -1);
+
+        prefs.edit().putInt(PREF_LAST_SEEN_VERSION, currentVersion).apply();
+
+        if (lastSeenVersion == -1 || lastSeenVersion >= currentVersion) return;
+
+        new android.os.Handler(getMainLooper()).postDelayed(() -> {
+            if (isFinishing()) return;
+            new AlertDialog.Builder(this)
+                    .setTitle("Update complete 😈")
+                    .setMessage("You're dumb 😂")
+                    .setPositiveButton("OK", null)
+                    .show();
+        }, 900);
     }
 
     private int getCurrentVersionCode() {
