@@ -29,6 +29,12 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          convert -version
+
       - name: Install dependencies
         run: npm install
 
@@ -41,20 +47,18 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Prepare Android launcher icon
+      - name: Apply uploaded photo as Android launcher icon
         run: |
           test -s public/popup-image.svg
-          mkdir -p android/app/src/main/res/drawable
-          cp public/popup-image.svg android/app/src/main/res/drawable/ic_launcher.svg
-          rm -f android/app/src/main/res/mipmap-*/ic_launcher.png android/app/src/main/res/mipmap-*/ic_launcher_round.png
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('android/app/src/main/AndroidManifest.xml')
-          s=p.read_text()
-          s=s.replace('android:icon="@mipmap/ic_launcher"', 'android:icon="@drawable/ic_launcher"')
-          s=s.replace('android:roundIcon="@mipmap/ic_launcher_round"', 'android:roundIcon="@drawable/ic_launcher"')
-          p.write_text(s)
-          PY
+          mkdir -p /tmp/bh21-icon
+          convert public/popup-image.svg -background none -alpha on -resize 512x512^ -gravity center -extent 512x512 /tmp/bh21-icon/icon.png
+          for spec in 'mdpi:48' 'hdpi:72' 'xhdpi:96' 'xxhdpi:144' 'xxxhdpi:192'; do
+            density="${spec%%:*}"
+            size="${spec##*:}"
+            mkdir -p "android/app/src/main/res/mipmap-${density}"
+            convert /tmp/bh21-icon/icon.png -resize "${size}x${size}" "android/app/src/main/res/mipmap-${density}/ic_launcher.png"
+            cp "android/app/src/main/res/mipmap-${density}/ic_launcher.png" "android/app/src/main/res/mipmap-${density}/ic_launcher_round.png"
+          done
 
       - name: Prepare release signing keystore
         env:
