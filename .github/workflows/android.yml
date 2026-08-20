@@ -41,6 +41,19 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
+      - name: Apply uploaded photo as Android launcher icon
+        run: |
+          test -s public/popup-image.svg
+          mkdir -p /tmp/bh21-icon
+          convert public/popup-image.svg -background none -alpha on -resize 512x512^ -gravity center -extent 512x512 /tmp/bh21-icon/icon.png
+          for spec in 'mdpi:48' 'hdpi:72' 'xhdpi:96' 'xxhdpi:144' 'xxxhdpi:192'; do
+            density="${spec%%:*}"
+            size="${spec##*:}"
+            mkdir -p "android/app/src/main/res/mipmap-${density}"
+            convert /tmp/bh21-icon/icon.png -resize "${size}x${size}" "android/app/src/main/res/mipmap-${density}/ic_launcher.png"
+            cp "android/app/src/main/res/mipmap-${density}/ic_launcher.png" "android/app/src/main/res/mipmap-${density}/ic_launcher_round.png"
+          done
+
       - name: Prepare release signing keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
