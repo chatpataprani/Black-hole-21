@@ -16,16 +16,23 @@
   const toast = (message) => {
     if (typeof window.showToast === "function") return window.showToast(message);
     const el = document.querySelector("#toast");
-    if (el) {
-      el.textContent = message;
-      el.classList.add("show");
-      clearTimeout(el._pushToastTimer);
-      el._pushToastTimer = setTimeout(() => el.classList.remove("show"), 3200);
-    }
+    if (!el) return;
+    el.textContent = message;
+    el.classList.add("show");
+    clearTimeout(el._pushToastTimer);
+    el._pushToastTimer = setTimeout(() => el.classList.remove("show"), 3200);
   };
 
+  // Never fall back to the browser Notification API inside the APK.
+  // Capacitor exposes the native bridge in the WebView; localhost/capacitor
+  // is only a secondary signal for older Capacitor builds.
   const isNative = () => {
-    try { return Boolean(window.Capacitor?.isNativePlatform?.()); } catch (_) { return false; }
+    try {
+      if (window.Capacitor?.isNativePlatform?.()) return true;
+      if (window.Capacitor?.getPlatform?.() === "android") return true;
+    } catch (_) {}
+    return (location.protocol === "capacitor:" || location.hostname === "localhost")
+      && /Android/i.test(navigator.userAgent);
   };
 
   async function registerToken(token, platform) {
@@ -35,7 +42,9 @@
       body: JSON.stringify({ token, platform }),
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.ok) throw new Error(result.error || `Token registration failed (HTTP ${response.status})`);
+    if (!response.ok || !result.ok) {
+      throw new Error(result.error || `Token registration failed (HTTP ${response.status})`);
+    }
     console.log(`[push] ${platform} token registered; subscribers=${result.subscriberCount}`);
   }
 
@@ -53,10 +62,10 @@
   async function nativePush() {
     const plugin = window.Capacitor?.Plugins?.PushNotifications;
     if (!plugin) {
-      setSetting(true);
-      toast("Android notifications are enabled.");
-      return;
+      console.error("[push] Capacitor PushNotifications plugin is unavailable in this APK");
+      throw new Error("Android push plugin is unavailable. Install the latest APK.");
     }
+
     let permission = await plugin.checkPermissions();
     if (permission.receive !== "granted") permission = await plugin.requestPermissions();
     if (permission.receive !== "granted") throw new Error("Notification permission was not granted.");
@@ -71,23 +80,29 @@
         toast(`Notifications failed: ${error.message}`);
       }
     });
+
     await plugin.addListener("registrationError", (error) => {
       console.error("[push] Android registration error:", error);
       toast(`Notifications failed: ${error?.error || "FCM registration error"}`);
     });
+
     await plugin.register();
   }
 
   const loadScript = (src) => new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve();
     const s = document.createElement("script");
-    s.src = src; s.async = true;
-    s.onload = resolve; s.onerror = () => reject(new Error(`Failed to load Firebase SDK: ${src}`));
+    s.src = src;
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Failed to load Firebase SDK: ${src}`));
     document.head.appendChild(s);
   });
 
   async function browserPush() {
-    if (!("Notification" in window) || !("serviceWorker" in navigator)) throw new Error("This browser does not support push notifications.");
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
+      throw new Error("This browser does not support push notifications.");
+    }
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("Notification permission was not granted.");
 
@@ -111,6 +126,7 @@
         data: payload.data || {},
       }));
     });
+
     setSetting(true);
     toast("Notifications enabled.");
   }
@@ -143,6 +159,9 @@
     });
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", installHandler, { once: true });
-  else installHandler();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", installHandler, { once: true });
+  } else {
+    installHandler();
+  }
 })();
