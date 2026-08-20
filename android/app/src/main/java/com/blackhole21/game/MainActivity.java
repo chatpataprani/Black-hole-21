@@ -60,9 +60,13 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void setupPushNotifications() {
-        boolean notificationsEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled();
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean promptShown = prefs.getBoolean(PREF_NOTIFICATION_PROMPT, false);
 
-        if (!notificationsEnabled) {
+        // Android 10/11 do not have a runtime notification permission. We still
+        // show our own one-time explanation so a fresh APK install explicitly
+        // asks the player to enable notifications.
+        if (!promptShown) {
             showNotificationEnablePrompt();
             return;
         }
@@ -79,8 +83,6 @@ public class MainActivity extends BridgeActivity {
 
     private void showNotificationEnablePrompt() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        boolean alreadyShown = prefs.getBoolean(PREF_NOTIFICATION_PROMPT, false);
-        if (alreadyShown) return;
         prefs.edit().putBoolean(PREF_NOTIFICATION_PROMPT, true).apply();
 
         new AlertDialog.Builder(this)
