@@ -8,7 +8,7 @@ on:
       - fix/android-fcm-push
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -49,10 +49,27 @@ jobs:
       - name: Verify APK output
         run: test -s android/app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload APK
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk Black-Hole-21.apk
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: Black-Hole-21-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: Black-Hole-21.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish latest APK release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION_CODE=$(sed -n 's/.*versionCode \([0-9][0-9]*\).*/\1/p' android/app/build.gradle | head -1)
+          VERSION_NAME=$(sed -n 's/.*versionName "\([^"]*\)".*/\1/p' android/app/build.gradle | head -1)
+          TAG="android-v${VERSION_CODE}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" Black-Hole-21.apk --clobber
+          else
+            gh release create "$TAG" Black-Hole-21.apk --title "Black Hole 21 v${VERSION_NAME}" --notes "Android APK release ${VERSION_NAME} (versionCode ${VERSION_CODE})." --latest
+          fi
