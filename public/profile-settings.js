@@ -13,6 +13,7 @@
     if (!clean) return false;
     localStorage.setItem(NAME_KEY, clean);
     document.querySelectorAll("#create-name, #join-name").forEach((el) => { el.value = clean; });
+    updateNameLabel();
     return true;
   }
 
@@ -34,8 +35,11 @@
       .bh21-logo-upload input { display:none; }
       #screen-settings .bh21-profile-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
       #screen-settings .bh21-profile-value { max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.65; }
-      #custom-game-logo { width:96px; height:96px; object-fit:cover; border-radius:24px; display:block; margin:0 auto 16px; border:1px solid rgba(255,255,255,.14); box-shadow:0 12px 40px rgba(0,0,0,.35); }
+      .bh21-custom-logo { object-fit:contain; display:block; margin:0 auto; border-radius:24px; }
+      #screen-home .bh21-custom-logo { width:min(220px,52vw); height:min(220px,52vw); margin:0 auto 16px; }
+      #screen-about .bh21-custom-logo { width:120px; height:120px; margin:0 auto 16px; }
       .bh21-logo-active .hero-mark { display:none !important; }
+      .bh21-logo-active .bh21-custom-logo { display:block !important; }
     `;
     document.head.appendChild(style);
   }
@@ -76,7 +80,7 @@
     const modal = addModal("bh21-logo-modal", `
       <div class="bh21-profile-card" role="dialog" aria-modal="true" aria-labelledby="bh21-logo-title">
         <h2 id="bh21-logo-title">Change game logo</h2>
-        <p>Choose an image from your phone. This changes the logo inside the game on this device.</p>
+        <p>Choose an image from your phone. This changes the main game logo on this device.</p>
         <img id="bh21-logo-preview" class="bh21-logo-preview" alt="Logo preview" />
         <label class="bh21-logo-upload">Tap to choose an image<input id="bh21-logo-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /></label>
         <div class="bh21-profile-actions"><button id="bh21-logo-reset" class="btn btn-ghost">Reset</button><button id="bh21-logo-close" class="btn btn-secondary">Done</button></div>
@@ -88,10 +92,20 @@
       if (!file) return;
       if (file.size > 8 * 1024 * 1024) { showToastSafe("Image is too large (max 8 MB)"); input.value = ""; return; }
       const reader = new FileReader();
-      reader.onload = () => compressLogo(reader.result).then((dataUrl) => { localStorage.setItem(LOGO_KEY, dataUrl); applyLogo(dataUrl); preview.src = dataUrl; showToastSafe("Logo changed"); }).catch(() => showToastSafe("Couldn't use that image"));
+      reader.onload = () => compressLogo(reader.result).then((dataUrl) => {
+        localStorage.setItem(LOGO_KEY, dataUrl);
+        applyLogo(dataUrl);
+        preview.src = dataUrl;
+        showToastSafe("Logo changed");
+      }).catch(() => showToastSafe("Couldn't use that image"));
       reader.readAsDataURL(file);
     });
-    modal.querySelector("#bh21-logo-reset").addEventListener("click", () => { localStorage.removeItem(LOGO_KEY); applyLogo(""); preview.src = ""; showToastSafe("Logo reset"); });
+    modal.querySelector("#bh21-logo-reset").addEventListener("click", () => {
+      localStorage.removeItem(LOGO_KEY);
+      applyLogo("");
+      preview.src = "";
+      showToastSafe("Logo reset");
+    });
     modal.querySelector("#bh21-logo-close").addEventListener("click", () => modal.classList.remove("open"));
     return modal;
   }
@@ -117,17 +131,21 @@
 
   function applyLogo(dataUrl) {
     document.body.classList.toggle("bh21-logo-active", !!dataUrl);
-    let img = document.getElementById("custom-game-logo");
-    if (!img) {
-      img = document.createElement("img");
-      img.id = "custom-game-logo";
-      img.alt = "Game logo";
-      const homeMark = document.querySelector("#screen-home .hero-mark");
-      if (homeMark) homeMark.parentNode.insertBefore(img, homeMark.nextSibling);
-    }
-    img.style.display = dataUrl ? "block" : "none";
-    if (dataUrl) img.src = dataUrl;
-    document.querySelectorAll(".bh21-custom-logo-preview").forEach((el) => { el.src = dataUrl || ""; el.style.display = dataUrl ? "block" : "none"; });
+    document.querySelectorAll("canvas.hero-mark[data-mini-hole]").forEach((canvas) => {
+      let img = canvas.parentNode.querySelector(":scope > .bh21-custom-logo");
+      if (!img) {
+        img = document.createElement("img");
+        img.className = "bh21-custom-logo";
+        img.alt = "Custom Black Hole 21 logo";
+        canvas.insertAdjacentElement("afterend", img);
+      }
+      img.src = dataUrl || "";
+      img.style.display = dataUrl ? "block" : "none";
+    });
+    document.querySelectorAll(".bh21-custom-logo-preview").forEach((el) => {
+      el.src = dataUrl || "";
+      el.style.display = dataUrl ? "block" : "none";
+    });
   }
 
   function addSettingsRows() {
@@ -189,7 +207,7 @@
     fillNames();
     applyLogo(localStorage.getItem(LOGO_KEY) || "");
     addSettingsRows();
-    const observer = new MutationObserver(() => { fillNames(); addSettingsRows(); });
+    const observer = new MutationObserver(() => { fillNames(); addSettingsRows(); applyLogo(localStorage.getItem(LOGO_KEY) || ""); });
     observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("storage", () => { fillNames(); updateNameLabel(); applyLogo(localStorage.getItem(LOGO_KEY) || ""); });
   }
