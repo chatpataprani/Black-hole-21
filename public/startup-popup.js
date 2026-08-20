@@ -1,6 +1,5 @@
 (() => {
   const IMAGE = '/popup-image.svg?v=1';
-  const KEY = 'black-hole-21-startup-popup-seen';
   if (window.__blackHoleStartupPopup) return;
   window.__blackHoleStartupPopup = true;
 
@@ -32,11 +31,6 @@
     requestAnimationFrame(() => wrap.classList.add('bh21-show'));
   }
 
-  // Show once per browser/app installation. Clear this key in browser storage to test again.
-  try {
-    if (localStorage.getItem(KEY) === '1') return;
-    localStorage.setItem(KEY, '1');
-  } catch (_) {}
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', show, {once:true});
   else show();
 })();
