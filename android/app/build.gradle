@@ -17,16 +17,16 @@ android {
 
     signingConfigs {
         release {
-            def keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-            def keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-            def keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-            def keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            def signingKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            def signingKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            def signingKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            def signingKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
 
-            if (keystorePath && keystorePassword && keyAlias && keyPassword) {
-                storeFile file(keystorePath)
-                storePassword keystorePassword
-                keyAlias keyAlias
-                keyPassword keyPassword
+            if (signingKeystorePath && signingKeystorePassword && signingKeyAlias && signingKeyPassword) {
+                storeFile file(signingKeystorePath)
+                storePassword signingKeystorePassword
+                keyAlias signingKeyAlias
+                keyPassword signingKeyPassword
             }
         }
     }
