@@ -18,7 +18,12 @@ const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS) || 30 * 60 * 1000;
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    methods: ["GET", "POST"],
+  },
+});
 
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/api", adminRoutes);
