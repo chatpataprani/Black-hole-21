@@ -46,7 +46,7 @@
 
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="black_hole_21_notifications" />
+            android:value="black_hole_21_broadcasts_v2" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
