@@ -13,6 +13,11 @@
   const hostname = window.location.hostname;
   const isCapacitor = !!window.Capacitor || protocol === "capacitor:" || protocol === "ionic:" || hostname === "localhost";
 
+  function showConnectionMessage(message) {
+    const el = document.querySelector("#conn-text");
+    if (el) el.textContent = message;
+  }
+
   window.io = function configuredIo(url, options) {
     const opts = Object.assign({
       transports: ["polling", "websocket"],
@@ -26,19 +31,43 @@
 
     const target = isCapacitor ? BACKEND_URL : (url || window.location.origin);
     const socket = originalIo(target, opts);
+    window.__bh21Socket = socket;
 
     socket.on("connect_error", (err) => {
-      console.error("[socket] connection error:", err && err.message ? err.message : err);
-      window.dispatchEvent(new CustomEvent("bh21-socket-error", {
-        detail: { message: err && err.message ? err.message : "Connection failed" }
-      }));
+      const message = err && err.message ? err.message : "Connection failed";
+      console.error("[socket] connection error:", message);
+      window.dispatchEvent(new CustomEvent("bh21-socket-error", { detail: { message } }));
+      showConnectionMessage("Connection error — retrying…");
     });
+
     socket.on("connect", () => {
       console.info("[socket] connected:", socket.id, "target:", target);
     });
+
     socket.on("disconnect", (reason) => {
       console.warn("[socket] disconnected:", reason);
     });
+
     return socket;
   };
+
+  // Never let a disconnected socket make a button appear frozen. The
+  // navigation UI stays usable, while network-dependent actions wait for
+  // an actual connection instead of emitting requests that can never ack.
+  document.addEventListener("click", (event) => {
+    const socket = window.__bh21Socket;
+    if (!socket || socket.connected) return;
+    const target = event.target && event.target.closest
+      ? event.target.closest("button")
+      : null;
+    if (!target) return;
+
+    const blocked = target.matches("#btn-create-submit, #btn-join-submit, #btn-play-again") ||
+      !!target.closest("#number-selector");
+    if (!blocked) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    showConnectionMessage("Connecting…");
+  }, true);
 })();
