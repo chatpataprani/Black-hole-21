@@ -15,7 +15,8 @@ import com.google.firebase.messaging.RemoteMessage;
 
 public class BlackHoleFirebaseMessagingService extends FirebaseMessagingService {
     private static final String TAG = "BlackHole21";
-    private static final String CHANNEL_ID = "black_hole_21_notifications";
+    private static final String CHANNEL_ID = "black_hole_21_broadcasts_v2";
+    private static final long[] VIBRATION_PATTERN = new long[]{0, 200, 150, 200, 150, 200};
 
     @Override
     public void onNewToken(String token) {
@@ -62,8 +63,9 @@ public class BlackHoleFirebaseMessagingService extends FirebaseMessagingService 
                 .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setAutoCancel(true);
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setVibrate(VIBRATION_PATTERN);
 
         if (pendingIntent != null) builder.setContentIntent(pendingIntent);
 
@@ -81,10 +83,12 @@ public class BlackHoleFirebaseMessagingService extends FirebaseMessagingService 
 
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Black Hole 21 notifications",
-                NotificationManager.IMPORTANCE_DEFAULT
+                "Black Hole 21 broadcasts",
+                NotificationManager.IMPORTANCE_HIGH
         );
         channel.setDescription("Black Hole 21 admin broadcasts");
+        channel.enableVibration(true);
+        channel.setVibrationPattern(VIBRATION_PATTERN);
         manager.createNotificationChannel(channel);
     }
 }
