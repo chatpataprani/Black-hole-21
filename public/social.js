@@ -1,0 +1,80 @@
+(function () {
+  "use strict";
+
+  const USER_KEY = "bh21_social_user";
+  const getName = () => (localStorage.getItem("bh21_player_name") || "Player").trim().slice(0, 20) || "Player";
+  function getUserId() {
+    let id = localStorage.getItem(USER_KEY);
+    if (!id) {
+      id = "p_" + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "").slice(0, 20) : Math.random().toString(36).slice(2, 22));
+      localStorage.setItem(USER_KEY, id);
+    }
+    return id;
+  }
+
+  const css = `
+    .bh-social-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}.bh-social-actions .btn{flex:1;min-width:130px}
+    .bh-social-panel{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,0,0,.78);backdrop-filter:blur(12px)}
+    .bh-social-panel.open{display:flex}.bh-social-card{width:min(520px,100%);max-height:86vh;overflow:auto;padding:24px;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:#11121d;color:#fff;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+    .bh-social-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.bh-social-head h2{margin:0}.bh-social-close{border:0;background:transparent;color:#fff;font-size:1.5rem;cursor:pointer}
+    .bh-social-id{font-size:.78rem;opacity:.55;word-break:break-all;margin:4px 0 18px}.bh-social-add{display:flex;gap:8px}.bh-social-add input{flex:1;min-width:0}.bh-friend{padding:12px;border:1px solid rgba(255,255,255,.09);border-radius:14px;margin-top:10px}.bh-friend-top{display:flex;justify-content:space-between;gap:10px}.bh-friend-name{font-weight:700}.bh-friend-id{font-size:.75rem;opacity:.5}.bh-chat{display:none;margin-top:10px}.bh-chat.open{display:block}.bh-chat-log{height:150px;overflow:auto;background:rgba(0,0,0,.18);border-radius:12px;padding:10px;margin-bottom:8px}.bh-chat-line{margin:5px 0;line-height:1.35}.bh-chat-line b{opacity:.7}.bh-chat-compose{display:flex;gap:8px}.bh-chat-compose input{flex:1}.bh-reacts{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.bh-react{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#fff;border-radius:10px;padding:7px 10px;cursor:pointer}
+    .bh-match-status{margin:14px 0;padding:14px;border-radius:14px;background:rgba(255,255,255,.05);text-align:center}.bh-match-status strong{display:block;margin-bottom:5px}
+    .bh-game-reactions{position:fixed;right:14px;bottom:18px;z-index:50;display:none;gap:6px;flex-wrap:wrap;max-width:220px;justify-content:flex-end}.bh-game-reactions.open{display:flex}.bh-game-reaction{border:1px solid rgba(255,255,255,.15);background:rgba(10,12,22,.88);color:#fff;border-radius:12px;padding:8px 11px;cursor:pointer}.bh-reaction-toast{position:fixed;left:50%;top:22%;transform:translateX(-50%);z-index:10000;padding:10px 16px;border-radius:14px;background:rgba(12,14,24,.94);border:1px solid rgba(255,255,255,.14);opacity:0;pointer-events:none;transition:opacity .18s}.bh-reaction-toast.show{opacity:1}
+  `;
+  function inject() {
+    if (!document.getElementById("bh-social-style")) { const s=document.createElement("style"); s.id="bh-social-style"; s.textContent=css; document.head.appendChild(s); }
+    const play = document.querySelector("#screen-play .home-actions");
+    if (play && !document.getElementById("btn-random-match")) {
+      const wrap=document.createElement("div"); wrap.className="bh-social-actions";
+      wrap.innerHTML='<button id="btn-random-match" class="btn btn-primary">Random match</button><button id="btn-friends" class="btn btn-secondary">Friends</button>';
+      play.appendChild(wrap);
+    }
+    if (!document.getElementById("bh-social-panel")) {
+      const panel=document.createElement("div"); panel.id="bh-social-panel"; panel.className="bh-social-panel";
+      panel.innerHTML='<div class="bh-social-card"><div class="bh-social-head"><h2>Friends</h2><button class="bh-social-close" id="bh-friends-close" aria-label="Close">×</button></div><div class="bh-social-id">Your player ID: <span id="bh-my-id"></span></div><div class="bh-social-add"><input id="bh-friend-id" class="text-input" maxlength="80" placeholder="Enter player ID" autocomplete="off"><button id="bh-add-friend" class="btn btn-primary">Add</button></div><div id="bh-friend-list"></div></div>';
+      document.body.appendChild(panel);
+    }
+    if (!document.getElementById("bh-match-panel")) {
+      const panel=document.createElement("div"); panel.id="bh-match-panel"; panel.className="bh-social-panel";
+      panel.innerHTML='<div class="bh-social-card"><div class="bh-social-head"><h2>Random match</h2><button class="bh-social-close" id="bh-match-close">×</button></div><div class="bh-match-status"><strong id="bh-match-title">Searching for opponent</strong><span id="bh-match-sub">Keep this screen open. The first available player will be matched with you.</span></div><button id="bh-match-cancel" class="btn btn-secondary">Cancel</button></div>';
+      document.body.appendChild(panel);
+    }
+    if (!document.getElementById("bh-game-reactions")) {
+      const r=document.createElement("div"); r.id="bh-game-reactions"; r.className="bh-game-reactions";
+      r.innerHTML='<button class="bh-game-reaction" data-reaction="Nice move">Nice move</button><button class="bh-game-reaction" data-reaction="Good game">Good game</button><button class="bh-game-reaction" data-reaction="Your turn">Your turn</button><button class="bh-game-reaction" data-reaction="Well played">Well played</button>';
+      document.body.appendChild(r);
+    }
+    if (!document.getElementById("bh-reaction-toast")) { const t=document.createElement("div"); t.id="bh-reaction-toast"; t.className="bh-reaction-toast"; document.body.appendChild(t); }
+  }
+
+  function toast(msg){ if(typeof window.showToast==='function') window.showToast(msg); else { const e=document.getElementById('toast'); if(e){e.textContent=msg;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2200);} } }
+  function socket(){ return window.appState?.socket || (typeof appState !== 'undefined' ? appState.socket : null); }
+  function register(){ const s=socket(); if(!s) return; s.emit('register_user',{userId:getUserId(),name:getName()},res=>{ if(res?.ok) renderFriends(res.friends||[]); }); }
+  function renderFriends(ids){
+    const list=document.getElementById('bh-friend-list'); if(!list) return;
+    if(!ids.length){list.innerHTML='<p style="opacity:.6;margin-top:18px">No friends yet. Add a player using their ID.</p>';return;}
+    list.innerHTML=ids.map(id=>friendMarkup(typeof id==='string'?{id}:id)).join('');
+    list.querySelectorAll('[data-friend]').forEach(el=>el.addEventListener('click',()=>openChat(el.dataset.friend,el.dataset.name||el.dataset.friend)));
+  }
+  const friends=new Map();
+  function friendMarkup(f){ friends.set(f.id,f); return `<div class="bh-friend"><div class="bh-friend-top"><div><div class="bh-friend-name">${escapeHtml(f.name||'Player')}</div><div class="bh-friend-id">${escapeHtml(f.id)}</div></div><button class="btn btn-ghost" data-friend="${escapeAttr(f.id)}" data-name="${escapeAttr(f.name||'Player')}">Message</button></div><div class="bh-chat" id="chat-${safeId(f.id)}"><div class="bh-chat-log"></div><div class="bh-chat-compose"><input class="text-input" placeholder="Message" maxlength="500"><button class="btn btn-primary">Send</button></div><div class="bh-reacts"><button class="bh-react" data-chat-reaction="Nice">Nice</button><button class="bh-react" data-chat-reaction="Good game">Good game</button><button class="bh-react" data-chat-reaction="Well played">Well played</button></div></div></div>`; }
+  function openChat(id,name){ const box=document.getElementById('chat-'+safeId(id)); if(!box)return; box.classList.toggle('open'); if(!box.dataset.bound){box.dataset.bound='1'; const input=box.querySelector('input'); box.querySelector('.btn-primary').addEventListener('click',()=>sendMessage(id,input)); input.addEventListener('keydown',e=>{if(e.key==='Enter')sendMessage(id,input);}); box.querySelectorAll('[data-chat-reaction]').forEach(b=>b.addEventListener('click',()=>sendReaction(id,b.dataset.chatReaction)));} }
+  function sendMessage(id,input){ const text=input.value.trim(); if(!text)return; const s=socket(); if(!s)return; s.emit('friend_message',{friendId:id,text},res=>{if(res?.ok){appendChat(id,`You: ${text}`);input.value='';}else toast(res?.message||'Message failed');}); }
+  function sendReaction(id,value){ const s=socket(); if(!s)return; s.emit('friend_reaction',{friendId:id,reaction:value},res=>{if(!res?.ok)toast('Reaction could not be sent');}); }
+  function appendChat(id,text){ const box=document.getElementById('chat-'+safeId(id)); if(!box)return; const log=box.querySelector('.bh-chat-log'); const line=document.createElement('div'); line.className='bh-chat-line'; line.textContent=text; log.appendChild(line); log.scrollTop=log.scrollHeight; }
+  function safeId(s){return String(s).replace(/[^a-zA-Z0-9_-]/g,'_');} function escapeHtml(s){return String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));} function escapeAttr(s){return escapeHtml(s).replace(/'/g,'&#39;');}
+  function startRandom(){ const s=socket(); if(!s)return toast('Connecting to game server'); const p=document.getElementById('bh-match-panel'); p.classList.add('open'); document.getElementById('bh-match-title').textContent='Searching for opponent'; document.getElementById('bh-match-sub').textContent='Waiting for another player to choose Random match.'; s.emit('matchmake',{name:getName()},res=>{ if(!res?.ok)return toast('Could not start matchmaking'); if(!res.waiting)handleMatch(res); }); }
+  function handleMatch(res){ const p=document.getElementById('bh-match-panel'); p.classList.remove('open'); if(typeof enterGame==='function'&&res.game) enterGame(res.game,res.roomCode,res.you); }
+  function cancelRandom(){ const s=socket(); if(s)s.emit('cancel_matchmake'); document.getElementById('bh-match-panel')?.classList.remove('open'); }
+  function bind(){
+    document.getElementById('btn-random-match')?.addEventListener('click',startRandom);
+    document.getElementById('btn-friends')?.addEventListener('click',()=>{document.getElementById('bh-social-panel').classList.add('open');document.getElementById('bh-my-id').textContent=getUserId();register();});
+    document.getElementById('bh-friends-close')?.addEventListener('click',()=>document.getElementById('bh-social-panel').classList.remove('open'));
+    document.getElementById('bh-match-close')?.addEventListener('click',cancelRandom); document.getElementById('bh-match-cancel')?.addEventListener('click',cancelRandom);
+    document.getElementById('bh-add-friend')?.addEventListener('click',()=>{const id=document.getElementById('bh-friend-id').value.trim();const s=socket();if(!id||!s)return; s.emit('friend_add',{friendId:id},res=>{if(res?.ok){document.getElementById('bh-friend-id').value='';renderFriends(res.friends||[]);toast('Friend added');}else toast(res?.message||'Could not add friend');});});
+    document.querySelectorAll('.bh-game-reaction').forEach(b=>b.addEventListener('click',()=>{const s=socket();if(s)s.emit('friend_reaction',{friendId:window.__bh21OpponentId||'',reaction:b.dataset.reaction});}));
+    const oldGameObserver=new MutationObserver(()=>{const active=document.getElementById('screen-game')?.classList.contains('active');document.getElementById('bh-game-reactions')?.classList.toggle('open',!!active);}); oldGameObserver.observe(document.body,{attributes:true,subtree:true,attributeFilter:['class']});
+  }
+  function boot(){ inject(); bind(); const s=socket(); if(s){s.on('connect',register); register(); s.on('match_found',handleMatch); s.on('friend_added',p=>{friends.set(p.userId,{id:p.userId,name:p.name});toast('New friend added');}); s.on('friend_message',p=>{appendChat(p.from,`${p.name||'Friend'}: ${p.text}`);}); s.on('friend_reaction',p=>{const t=document.getElementById('bh-reaction-toast');t.textContent=`${p.reaction}`;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1600);});} }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
