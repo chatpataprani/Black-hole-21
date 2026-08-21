@@ -16,19 +16,13 @@
     const id = numericId();
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(id).then(() => notify("Player ID copied")).catch(() => fallbackCopy(id));
-    } else {
-      fallbackCopy(id);
-    }
+    } else fallbackCopy(id);
   }
 
   function fallbackCopy(text) {
     const input = document.createElement("textarea");
-    input.value = text;
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    document.body.appendChild(input);
-    input.focus();
-    input.select();
+    input.value = text; input.style.position = "fixed"; input.style.opacity = "0";
+    document.body.appendChild(input); input.focus(); input.select();
     try { document.execCommand("copy"); notify("Player ID copied"); }
     catch (_) { notify("Copy failed. Select your Player ID manually."); }
     input.remove();
@@ -38,11 +32,7 @@
     if (typeof window.showToast === "function") window.showToast(message);
     else {
       const toast = document.getElementById("toast");
-      if (toast) {
-        toast.textContent = message;
-        toast.classList.add("show");
-        setTimeout(() => toast.classList.remove("show"), 1800);
-      }
+      if (toast) { toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 1800); }
     }
   }
 
@@ -50,25 +40,30 @@
     const id = numericId();
     const value = document.getElementById("bh-my-id");
     if (value) value.textContent = id;
-
     if (document.getElementById("bh-copy-player-id")) return;
     const idLine = document.querySelector(".bh-social-id");
     if (!idLine) return;
-
     const button = document.createElement("button");
-    button.id = "bh-copy-player-id";
-    button.className = "btn btn-secondary";
-    button.type = "button";
-    button.textContent = "Copy ID";
-    button.style.marginBottom = "14px";
-    button.addEventListener("click", copyId);
-    idLine.insertAdjacentElement("afterend", button);
+    button.id = "bh-copy-player-id"; button.className = "btn btn-secondary"; button.type = "button";
+    button.textContent = "Copy ID"; button.style.marginBottom = "14px";
+    button.addEventListener("click", copyId); idLine.insertAdjacentElement("afterend", button);
+  }
+
+  function recoverConnection() {
+    try {
+      if (typeof window.io !== "function") return;
+      if (window.appState?.socket?.connected) return;
+      if (typeof window.connectSocket === "function") window.connectSocket();
+    } catch (err) { console.error("[connection-recovery]", err); }
   }
 
   function boot() {
     setup();
     const observer = new MutationObserver(setup);
     observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(recoverConnection, 250);
+    setTimeout(recoverConnection, 2000);
+    setTimeout(recoverConnection, 5000);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
