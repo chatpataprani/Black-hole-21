@@ -49,21 +49,10 @@
     button.addEventListener("click", copyId); idLine.insertAdjacentElement("afterend", button);
   }
 
-  function recoverConnection() {
-    try {
-      if (typeof window.io !== "function") return;
-      if (window.appState?.socket?.connected) return;
-      if (typeof window.connectSocket === "function") window.connectSocket();
-    } catch (err) { console.error("[connection-recovery]", err); }
-  }
-
   function boot() {
     setup();
     const observer = new MutationObserver(setup);
     observer.observe(document.body, { childList: true, subtree: true });
-    setTimeout(recoverConnection, 250);
-    setTimeout(recoverConnection, 2000);
-    setTimeout(recoverConnection, 5000);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
