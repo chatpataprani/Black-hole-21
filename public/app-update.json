@@ -1,6 +1,6 @@
 {
-  "versionCode": 9,
-  "versionName": "2.0.6",
+  "versionCode": 10,
+  "versionName": "2.0.7",
   "apkUrl": "https://github.com/chatpataprani/Black-hole-21/releases/latest/download/Black-Hole-21.apk",
-  "notes": "IMPORTANT UPDATE — fixes Android app icon/build issues, removes the annoying update popup from the new version, and keeps notifications working. Please update Black Hole 21."
+  "notes": "Notification update — broadcasts now use a high-priority notification channel with a three-pulse vibration pattern. The custom in-app notification enable prompt has been removed; Android handles notification permission directly."
 }
