@@ -1,6 +1,6 @@
 {
-  "versionCode": 10,
-  "versionName": "2.0.7",
+  "versionCode": 11,
+  "versionName": "2.0.8",
   "apkUrl": "https://github.com/chatpataprani/Black-hole-21/releases/latest/download/Black-Hole-21.apk",
-  "notes": "Notification update — broadcasts now use a high-priority notification channel with a three-pulse vibration pattern. The custom in-app notification enable prompt has been removed; Android handles notification permission directly."
+  "notes": "Social update — random matchmaking, player IDs, friends, private messages, friend reactions, saved profile name and custom in-game logo. Emoji labels have been removed from the interface."
 }
