@@ -2,17 +2,13 @@ package com.blackhole21.game;
 
 import android.Manifest;
 import android.app.AlertDialog;
-import android.app.DownloadManager;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.Environment;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -23,34 +19,18 @@ import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 import com.google.firebase.messaging.FirebaseMessaging;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "BlackHole21";
     private static final int NOTIFICATION_PERMISSION_REQUEST = 2101;
     private static final String CHANNEL_ID = "black_hole_21_notifications";
     private static final String PREFS = "black_hole_21";
     private static final String PREF_NOTIFICATION_PROMPT = "notification_prompt_shown";
-    private static final String PREF_LAST_SEEN_VERSION = "last_seen_version_code";
-    private static final String PREF_LAST_PROMPTED_UPDATE = "last_prompted_update_version";
-    private static final String UPDATE_MANIFEST_URL = "https://black-hole-21.onrender.com/app-update.json";
-    private static final Pattern JSON_STRING = Pattern.compile("\\\"%s\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
-    private static final Pattern JSON_NUMBER = Pattern.compile("\\\"%s\\\"\\s*:\\s*(\\d+)");
-    private boolean updateDialogShowing = false;
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    public void onCreate(android.os.Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         createNotificationChannel();
         setupPushNotifications();
-        checkForAppUpdate();
-        showPostUpdateMessageIfNeeded();
     }
 
     @Override
@@ -60,7 +40,6 @@ public class MainActivity extends BridgeActivity {
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
             registerFcmToken();
         }
-        checkForAppUpdate();
     }
 
     private void setupPushNotifications() {
@@ -165,127 +144,6 @@ public class MainActivity extends BridgeActivity {
         channel.setDescription("Black Hole 21 game notifications");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.createNotificationChannel(channel);
-    }
-
-    private void checkForAppUpdate() {
-        new Thread(() -> {
-            HttpURLConnection connection = null;
-            try {
-                connection = (HttpURLConnection) new URL(UPDATE_MANIFEST_URL + "?t=" + System.currentTimeMillis()).openConnection();
-                connection.setConnectTimeout(5000);
-                connection.setReadTimeout(5000);
-                connection.setRequestProperty("Cache-Control", "no-cache, no-store");
-                int status = connection.getResponseCode();
-                if (status < 200 || status >= 300) return;
-                String json = readStream(connection.getInputStream());
-                int latestVersionCode = getJsonInt(json, "versionCode", -1);
-                String versionName = getJsonString(json, "versionName");
-                String apkUrl = getJsonString(json, "apkUrl");
-                String notes = getJsonString(json, "notes");
-                int currentVersion = getCurrentVersionCode();
-
-                if (latestVersionCode <= currentVersion || apkUrl == null || apkUrl.isEmpty()) return;
-
-                SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-                int lastPrompted = prefs.getInt(PREF_LAST_PROMPTED_UPDATE, -1);
-                if (lastPrompted == latestVersionCode) return;
-                prefs.edit().putInt(PREF_LAST_PROMPTED_UPDATE, latestVersionCode).apply();
-
-                runOnUiThread(() -> showUpdateDialog(latestVersionCode, versionName, apkUrl, notes));
-            } catch (Exception e) {
-                Log.d(TAG, "[update] check skipped: " + e.getMessage());
-            } finally {
-                if (connection != null) connection.disconnect();
-            }
-        }, "BlackHole21-UpdateCheck").start();
-    }
-
-    private void showUpdateDialog(int versionCode, String versionName, String apkUrl, String notes) {
-        if (isFinishing() || updateDialogShowing) return;
-        updateDialogShowing = true;
-
-        String message = "A NEW UPDATE IS AVAILABLE FOR BLACK HOLE 21.\n\n"
-                + "Current version: " + getCurrentVersionCode() + "\n"
-                + "New version: " + (versionName == null || versionName.isEmpty() ? versionCode : versionName) + "\n\n"
-                + (notes == null || notes.isEmpty() ? "Install the latest version to get the newest fixes and features." : notes);
-
-        new AlertDialog.Builder(this)
-                .setTitle("🚀 UPDATE AVAILABLE")
-                .setMessage(message)
-                .setNegativeButton("Later", (dialog, which) -> updateDialogShowing = false)
-                .setPositiveButton("UPDATE NOW", (dialog, which) -> {
-                    updateDialogShowing = false;
-                    downloadUpdate(apkUrl, versionCode);
-                })
-                .setOnCancelListener(dialog -> updateDialogShowing = false)
-                .show();
-    }
-
-    private void downloadUpdate(String apkUrl, int versionCode) {
-        try {
-            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            if (manager == null) throw new IllegalStateException("Download service unavailable");
-
-            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(apkUrl));
-            request.setTitle("Black Hole 21 — UPDATE AVAILABLE");
-            request.setDescription("Downloading Black Hole 21 v" + versionCode + " update");
-            request.setMimeType("application/vnd.android.package-archive");
-            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "Black-Hole-21-update-" + versionCode + ".apk");
-
-            long id = manager.enqueue(request);
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putLong("update_download_id", id).apply();
-            android.widget.Toast.makeText(this, "UPDATE DOWNLOADING…", android.widget.Toast.LENGTH_LONG).show();
-        } catch (Exception e) {
-            Log.e(TAG, "[update] download failed", e);
-            android.widget.Toast.makeText(this, "UPDATE DOWNLOAD FAILED. TRY AGAIN.", android.widget.Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void showPostUpdateMessageIfNeeded() {
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        int currentVersion = getCurrentVersionCode();
-        int lastSeenVersion = prefs.getInt(PREF_LAST_SEEN_VERSION, -1);
-
-        prefs.edit().putInt(PREF_LAST_SEEN_VERSION, currentVersion).apply();
-
-        if (lastSeenVersion == -1 || lastSeenVersion >= currentVersion) return;
-
-        new android.os.Handler(getMainLooper()).postDelayed(() -> {
-            if (isFinishing()) return;
-            new AlertDialog.Builder(this)
-                    .setTitle("Update complete 😈")
-                    .setMessage("You're dumb 😂")
-                    .setPositiveButton("OK", null)
-                    .show();
-        }, 900);
-    }
-
-    private int getCurrentVersionCode() {
-        try {
-            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
-        } catch (Exception e) {
-            return 1;
-        }
-    }
-
-    private static String readStream(InputStream stream) throws Exception {
-        StringBuilder result = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream))) {
-            String line;
-            while ((line = reader.readLine()) != null) result.append(line);
-        }
-        return result.toString();
-    }
-
-    private static int getJsonInt(String json, String key, int fallback) {
-        Matcher matcher = Pattern.compile(String.format(JSON_NUMBER.pattern(), Pattern.quote(key))).matcher(json);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : fallback;
-    }
-
-    private static String getJsonString(String json, String key) {
-        Matcher matcher = Pattern.compile(String.format(JSON_STRING.pattern(), Pattern.quote(key))).matcher(json);
-        return matcher.find() ? matcher.group(1).replace("\\n", "\n") : null;
     }
 
     @Override
