@@ -9,7 +9,9 @@
   }
 
   const BACKEND_URL = "https://black-hole-21.onrender.com";
-  const isCapacitor = !!(window.Capacitor || window.location.protocol === "capacitor:");
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+  const isCapacitor = !!window.Capacitor || protocol === "capacitor:" || protocol === "ionic:" || hostname === "localhost";
 
   window.io = function configuredIo(url, options) {
     const opts = Object.assign({
@@ -22,8 +24,6 @@
       autoConnect: true,
     }, options || {});
 
-    // Web uses its own origin when the game and Socket.IO server are the
-    // same deployment. Capacitor must use the public Render backend.
     const target = isCapacitor ? BACKEND_URL : (url || window.location.origin);
     const socket = originalIo(target, opts);
 
