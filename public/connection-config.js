@@ -10,10 +10,16 @@
     if (el) el.textContent = text;
   }
 
-  // Always use the Socket.IO client served by the same backend version.
-  // Do not depend on a CDN or on the APK/WebView origin.
+  // index.html may have loaded a CDN copy first. Replace it with the exact
+  // client served by the Socket.IO server so client/server versions cannot
+  // drift and the Android WebView never depends on a third-party CDN.
+  const cdnIo = window.io;
+  window.io = undefined;
+  document.write('<script src="' + CLIENT_URL + '"><\\/script>');
+
   if (typeof window.io !== "function") {
-    document.write('<script src="' + CLIENT_URL + '"><\\/script>');
+    // Restore the CDN copy only as a last-resort fallback.
+    window.io = cdnIo;
   }
 
   if (typeof window.io !== "function") {
