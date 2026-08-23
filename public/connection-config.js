@@ -1,73 +1,60 @@
-/* Black Hole 21 - reliable Socket.IO connection configuration. */
+/* Black Hole 21 - deterministic Socket.IO bootstrap. */
 (function () {
   "use strict";
 
   const BACKEND_URL = "https://black-hole-21.onrender.com";
   const CLIENT_URL = BACKEND_URL + "/socket.io/socket.io.js";
 
-  // The CDN client can be blocked by an ad blocker, WebView policy, flaky
-  // network, or an Android WebView. The app must still have a Socket.IO
-  // client available. Because this file is loaded while index.html is being
-  // parsed, document.write() lets us synchronously load the same client from
-  // our own backend before app.js executes.
-  if (typeof window.io !== "function") {
-    try {
-      document.write('<script src="' + CLIENT_URL + '"><\\/script>');
-    } catch (e) {
-      console.error("[socket] failed to load fallback Socket.IO client", e);
-    }
+  function setStatus(text) {
+    const el = document.querySelector("#conn-text");
+    if (el) el.textContent = text;
   }
 
-  const originalIo = window.io;
-  if (typeof originalIo !== "function") {
-    console.error("[socket] Socket.IO client was not loaded");
-    const status = document.querySelector("#conn-text");
-    if (status) status.textContent = "Connection error";
+  // Always use the Socket.IO client served by the same backend version.
+  // Do not depend on a CDN or on the APK/WebView origin.
+  if (typeof window.io !== "function") {
+    document.write('<script src="' + CLIENT_URL + '"><\\/script>');
+  }
+
+  if (typeof window.io !== "function") {
+    console.error("[socket] Socket.IO client failed to load from", CLIENT_URL);
+    setStatus("Connection error");
     return;
   }
 
-  function setStatus(message) {
-    const el = document.querySelector("#conn-text");
-    if (el) el.textContent = message;
-  }
+  const serverIo = window.io;
 
-  window.io = function configuredIo(_url, options) {
-    const opts = Object.assign({}, options || {}, {
+  window.io = function blackHoleIo(_ignoredUrl, suppliedOptions) {
+    const options = Object.assign({}, suppliedOptions || {}, {
       path: "/socket.io/",
-      transports: ["polling", "websocket"],
-      upgrade: true,
+      transports: ["polling"],
+      upgrade: false,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 20000,
       autoConnect: true,
-      withCredentials: false,
+      forceNew: true,
+      withCredentials: false
     });
 
-    const socket = originalIo(BACKEND_URL, opts);
+    const socket = serverIo(BACKEND_URL, options);
     window.__bh21Socket = socket;
 
-    socket.on("connect", () => {
+    socket.on("connect", function () {
       console.info("[socket] connected", socket.id);
       setStatus("Connected");
-      window.dispatchEvent(new CustomEvent("bh21-socket-connected", {
-        detail: { id: socket.id, target: BACKEND_URL }
-      }));
     });
 
-    socket.on("connect_error", (err) => {
-      const message = err && err.message ? err.message : "Connection failed";
-      console.error("[socket] connection error:", message, err);
+    socket.on("connect_error", function (err) {
+      console.error("[socket] connect_error", err && err.message, err);
       setStatus("Connection error");
-      window.dispatchEvent(new CustomEvent("bh21-socket-error", {
-        detail: { message }
-      }));
     });
 
-    socket.on("disconnect", (reason) => {
-      console.warn("[socket] disconnected:", reason);
-      setStatus("Reconnecting…");
+    socket.on("disconnect", function (reason) {
+      console.warn("[socket] disconnected", reason);
+      if (reason !== "io client disconnect") setStatus("Reconnecting…");
     });
 
     return socket;
