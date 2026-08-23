@@ -2,13 +2,29 @@
 (function () {
   "use strict";
 
-  const originalIo = window.io;
-  if (typeof originalIo !== "function") {
-    console.error("[socket] Socket.IO client was not loaded before connection-config.js");
-    return;
+  const BACKEND_URL = "https://black-hole-21.onrender.com";
+  const CLIENT_URL = BACKEND_URL + "/socket.io/socket.io.js";
+
+  // The CDN client can be blocked by an ad blocker, WebView policy, flaky
+  // network, or an Android WebView. The app must still have a Socket.IO
+  // client available. Because this file is loaded while index.html is being
+  // parsed, document.write() lets us synchronously load the same client from
+  // our own backend before app.js executes.
+  if (typeof window.io !== "function") {
+    try {
+      document.write('<script src="' + CLIENT_URL + '"><\\/script>');
+    } catch (e) {
+      console.error("[socket] failed to load fallback Socket.IO client", e);
+    }
   }
 
-  const BACKEND_URL = "https://black-hole-21.onrender.com";
+  const originalIo = window.io;
+  if (typeof originalIo !== "function") {
+    console.error("[socket] Socket.IO client was not loaded");
+    const status = document.querySelector("#conn-text");
+    if (status) status.textContent = "Connection error";
+    return;
+  }
 
   function setStatus(message) {
     const el = document.querySelector("#conn-text");
@@ -18,8 +34,8 @@
   window.io = function configuredIo(_url, options) {
     const opts = Object.assign({}, options || {}, {
       path: "/socket.io/",
-      transports: ["polling"],
-      upgrade: false,
+      transports: ["polling", "websocket"],
+      upgrade: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
