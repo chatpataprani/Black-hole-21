@@ -3,7 +3,6 @@
   "appName": "Black Hole 21",
   "webDir": "www",
   "server": {
-    "url": "https://black-hole-21.onrender.com",
     "cleartext": false
   }
 }
