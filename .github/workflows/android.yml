@@ -34,6 +34,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Prepare bundled web assets for Capacitor
+        run: |
+          rm -rf www
+          cp -R public www
+          test -s www/index.html
+          test -s www/app.js
+          test -s www/connection-config.js
+
       - name: Verify Android Firebase configuration
         run: |
           test -f android/app/google-services.json
