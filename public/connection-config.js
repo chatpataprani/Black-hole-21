@@ -1,9 +1,10 @@
-/* Black Hole 21 - Socket.IO bootstrap. Keep this synchronous and tiny. */
+/* Black Hole 21 - reliable Socket.IO bootstrap for web + Capacitor. */
 (function () {
   "use strict";
 
   const BACKEND_URL = "https://black-hole-21.onrender.com";
   const client = window.io;
+  let socket = null;
 
   if (typeof client !== "function") {
     console.error("[socket] Socket.IO client did not load");
@@ -12,31 +13,42 @@
     return;
   }
 
-  // app.js calls io() without arguments. Redirect that call to the real
-  // backend without document.write, dynamic scripts, or a second client.
-  window.io = function blackHoleIo(_ignoredUrl, suppliedOptions) {
-    const options = Object.assign({}, suppliedOptions || {}, {
+  function createSocket() {
+    if (socket) return socket;
+
+    socket = client(BACKEND_URL, {
       path: "/socket.io/",
-      transports: ["polling", "websocket"],
+      transports: ["websocket", "polling"],
       upgrade: true,
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      timeout: 20000,
+      timeout: 30000,
       autoConnect: true,
-      forceNew: true,
-      withCredentials: false,
+      withCredentials: false
     });
 
-    const socket = client(BACKEND_URL, options);
     window.__bh21Socket = socket;
 
-    socket.on("connect_error", (err) => {
-      console.error("[socket] connect_error:", err && err.message, err);
+    socket.on("connect", function () {
+      console.log("[socket] CONNECTED", socket.id, BACKEND_URL);
+    });
+    socket.on("connect_error", function (err) {
+      console.error("[socket] CONNECT_ERROR", err && err.message, err);
+    });
+    socket.on("disconnect", function (reason) {
+      console.warn("[socket] DISCONNECTED", reason);
     });
 
     return socket;
+  }
+
+  // app.js uses io(). Always return this same socket. The previous
+  // forceNew=true setup could create competing connections and leave the UI
+  // listening to a different socket than the one actually connected.
+  window.io = function blackHoleIo() {
+    return createSocket();
   };
 
   window.__BH21_SOCKET_URL = BACKEND_URL;
